@@ -59,7 +59,6 @@ body {
   color: transparent;
   display: inline-block;
 }
-.logo span { opacity: 0.9; }
 .tagline { margin: 2px 0 10px; color: var(--muted); font-size: 13px; }
 
 .tabs { display: flex; gap: 6px; }

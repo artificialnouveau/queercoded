@@ -64,14 +64,17 @@ remove that:
 
 ## The resting pose (gesture boundaries)
 
-Every gesture starts and ends in a **resting pose**: arms at your sides, whether
-standing or seated. This gives clean, automatic segmentation without a button
-press. For anyone who cannot reliably reach or hold this pose, a **Manual
-trigger** mode (hold a button or Spacebar) captures the movement instead.
+Every gesture starts and ends in a **resting pose**: hands on hips. This was
+chosen over arms-at-sides so the hands stay inside a close upper-body camera
+frame (no need to see the legs), and because it is a distinct, easy-to-hold
+pose. It gives clean, automatic segmentation without a button press. For anyone
+who cannot reliably reach or hold it, a **Manual trigger** mode (hold a button
+or Spacebar) captures the movement instead.
 
-`isResting()` is true when both wrists are at/below hip height and horizontally
-close to the body (not extended outward), relative to shoulder width. Because it
-is defined relative to the hips, it holds for seated users too.
+`isResting()` is true when each wrist sits near its hip: the wrist-to-hip
+distance, normalized by shoulder width, is below a threshold for both hands. It
+needs only the upper body (shoulders, hips, wrists) to be visible, so it works
+with the camera close in and works seated too.
 
 - **Perform:** a small state machine. In `rest`, leaving rest for a couple of
   frames starts a capture. In `move`, returning to rest for a few frames ends

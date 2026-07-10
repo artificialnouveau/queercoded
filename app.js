@@ -91,16 +91,17 @@ function keyLandmarksVisible(lms) {
   return KEY_LMS.every((i) => (lms[i]?.visibility ?? 0) > 0.5);
 }
 
-// "Resting" = standing with hands by the sides: both wrists at/below hip
-// height and horizontally close to the body (not extended outward).
+// "Resting" = hands on hips: each wrist sits near its hip. Chosen because it
+// keeps the hands within a close upper-body camera framing (no need to see the
+// legs) and is a distinct, easy-to-hold neutral pose.
 function isResting(lms) {
   const lw = lms[15], rw = lms[16], lh = lms[23], rh = lms[24], ls = lms[11], rs = lms[12];
   if ((lw?.visibility ?? 0) < 0.5 || (rw?.visibility ?? 0) < 0.5) return false;
-  const shoulderW = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6;
-  const wristsLow = lw.y > lh.y - 0.05 && rw.y > rh.y - 0.05; // y grows downward
-  const wristsNarrow =
-    Math.abs(lw.x - lh.x) < shoulderW * 0.8 && Math.abs(rw.x - rh.x) < shoulderW * 0.8;
-  return wristsLow && wristsNarrow;
+  if ((lh?.visibility ?? 0) < 0.5 || (rh?.visibility ?? 0) < 0.5) return false;
+  const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
+  const dL = Math.hypot(lw.x - lh.x, lw.y - lh.y) / scale;
+  const dR = Math.hypot(rw.x - rh.x, rw.y - rh.y) / scale;
+  return dL < 0.55 && dR < 0.55;
 }
 
 // Mean per-landmark euclidean distance between two normalized pose vectors.
@@ -376,7 +377,7 @@ async function startTeach() {
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
   } else {
     recordBtn.textContent = "Cancel";
-    setTeachMsg("Rest with your arms down, then perform your movement and return to rest.", "");
+    setTeachMsg("Put your hands on your hips, then perform your movement and return to that pose.", "");
   }
 }
 
