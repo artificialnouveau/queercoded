@@ -32,6 +32,10 @@ const bestDistEl = document.getElementById("bestDist");
 const barEl = document.getElementById("bar");
 const phraseEl = document.getElementById("phrase");
 const clearPhraseBtn = document.getElementById("clearPhrase");
+const triggerModeSel = document.getElementById("triggerMode");
+const holdBtn = document.getElementById("holdBtn");
+const soundToggle = document.getElementById("soundToggle");
+const wordList = document.getElementById("wordList");
 
 const wordInput = document.getElementById("wordInput");
 const durInput = document.getElementById("dur");
@@ -54,6 +58,13 @@ let lastFireAt = 0;
 let lastFiredWord = "";
 let phrase = [];
 let du = null;
+
+// Perform options / manual capture
+let triggerMode = "auto";     // "auto" (rest pose) | "manual" (hold)
+let soundOn = true;
+let manualCapturing = false;
+let manualFrames = [];
+let audioCtx = null;
 
 function newSeg() {
   return { state: "rest", frames: [], rest: [], restCount: 0, moveCount: 0, startedAt: 0 };
@@ -188,6 +199,8 @@ function loop() {
           recording.frames.push(vec);
           recording.rest.push(rest);
           if (now >= recording.endsAt) finishRecording();
+        } else if (triggerMode === "manual") {
+          if (manualCapturing) manualFrames.push(vec);
         } else {
           segmentStep(vec, rest, now);
         }
@@ -261,15 +274,56 @@ function matchAndFire(frames, now) {
 
 function setPerformState(s) {
   if (!landmarker) return;
-  statusEl.textContent = s === "move" ? "● reading movement…" : "● resting — strike a code";
+  if (s === "move") { statusEl.textContent = "● capturing movement…"; return; }
+  statusEl.textContent = triggerMode === "manual" ? "● ready — hold to capture" : "● resting — perform a code";
 }
 
 function fireWord(word, now) {
   lastFireAt = now;
   lastFiredWord = word;
   showBigWord(word);
+  ping();
   phrase.push(word);
   renderPhrase();
+}
+
+// Short confirmation tone on a successful match.
+function ping() {
+  if (!soundOn) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const t = audioCtx.currentTime;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(880, t);
+    o.frequency.exponentialRampToValueAtTime(1320, t + 0.12);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.25, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t);
+    o.stop(t + 0.26);
+  } catch {}
+}
+
+// ---------- Manual capture (accessibility fallback) ----------
+function startManual() {
+  if (recording || triggerMode !== "manual" || manualCapturing) return;
+  manualCapturing = true;
+  manualFrames = [];
+  setPerformState("move");
+  holdBtn.classList.add("recording");
+}
+function stopManual() {
+  if (!manualCapturing) return;
+  manualCapturing = false;
+  holdBtn.classList.remove("recording");
+  setPerformState("rest");
+  const frames = manualFrames;
+  manualFrames = [];
+  if (frames.length >= MIN_SEG_FRAMES) matchAndFire(frames, performance.now());
 }
 
 let bigWordTimer = null;
@@ -326,28 +380,53 @@ function finishRecording() {
   templates.push({ id: newId(), word, seq, durMs, createdAt: Date.now() });
   saveTemplates();
   renderCodeList();
-  setTeachMsg(`Saved “${word}”. Switch to Perform to try it.`, "ok");
+  const n = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase()).length;
+  setTeachMsg(
+    n > 1 ? `Saved example ${n} for “${word}”. More examples improve recognition.`
+          : `Saved “${word}”. Switch to Perform to try it.`,
+    "ok"
+  );
   wordInput.value = "";
 }
 
 // ---------- Codes list ----------
 function renderCodeList() {
-  if (templates.length === 0) {
+  // Group templates by word (case-insensitive); each word can hold many examples.
+  const groups = new Map();
+  for (const t of templates) {
+    const key = t.word.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { word: t.word, items: [] });
+    groups.get(key).items.push(t);
+  }
+
+  // Refresh the autocomplete of existing words shown in the Teach input.
+  if (wordList) {
+    wordList.innerHTML = "";
+    for (const g of groups.values()) {
+      const o = document.createElement("option");
+      o.value = g.word;
+      wordList.appendChild(o);
+    }
+  }
+
+  if (groups.size === 0) {
     codeList.innerHTML = '<li class="empty">No codes saved yet. Go to Teach to make one.</li>';
     return;
   }
   codeList.innerHTML = "";
-  for (const t of templates) {
+  for (const g of groups.values()) {
+    const count = g.items.length;
+    const last = Math.max(...g.items.map((t) => t.createdAt));
     const li = document.createElement("li");
     li.className = "code-item";
     li.innerHTML = `
       <div>
-        <div class="word">${escapeHtml(t.word)}</div>
-        <div class="meta">${(t.durMs / 1000).toFixed(1)}s · ${new Date(t.createdAt).toLocaleDateString()}</div>
+        <div class="word">${escapeHtml(g.word)}<span class="count">${count} example${count > 1 ? "s" : ""}</span></div>
+        <div class="meta">${new Date(last).toLocaleDateString()}</div>
       </div>
       <div class="row-actions">
-        <button class="btn small" data-act="rename" data-id="${t.id}">Rename</button>
-        <button class="btn small danger" data-act="del" data-id="${t.id}">Delete</button>
+        <button class="btn small" data-act="rename" data-word="${encodeURIComponent(g.word)}">Rename</button>
+        <button class="btn small danger" data-act="del" data-word="${encodeURIComponent(g.word)}">Delete</button>
       </div>`;
     codeList.appendChild(li);
   }
@@ -356,15 +435,22 @@ function renderCodeList() {
 codeList.addEventListener("click", (e) => {
   const btn = e.target.closest("button");
   if (!btn) return;
-  const { act, id } = btn.dataset;
+  const act = btn.dataset.act;
+  const word = decodeURIComponent(btn.dataset.word || "");
+  const matches = (t) => t.word.toLowerCase() === word.toLowerCase();
   if (act === "del") {
-    templates = templates.filter((t) => t.id !== id);
+    if (!confirm(`Delete “${word}” and all its examples?`)) return;
+    templates = templates.filter((t) => !matches(t));
     saveTemplates();
     renderCodeList();
   } else if (act === "rename") {
-    const t = templates.find((x) => x.id === id);
-    const name = prompt("New word or phrase:", t.word);
-    if (name && name.trim()) { t.word = name.trim(); saveTemplates(); renderCodeList(); }
+    const name = prompt("New word or phrase:", word);
+    if (name && name.trim()) {
+      const nn = name.trim();
+      for (const t of templates) if (matches(t)) t.word = nn;
+      saveTemplates();
+      renderCodeList();
+    }
   }
 });
 
@@ -412,6 +498,33 @@ threshInput.addEventListener("input", () => (threshVal.textContent = threshInput
 durInput.addEventListener("input", () => (durVal.textContent = parseFloat(durInput.value).toFixed(1) + "s"));
 recordBtn.addEventListener("click", startRecording);
 clearPhraseBtn.addEventListener("click", () => { phrase = []; renderPhrase(); });
+
+triggerModeSel.addEventListener("change", () => {
+  triggerMode = triggerModeSel.value;
+  holdBtn.hidden = triggerMode !== "manual";
+  manualCapturing = false;
+  seg = newSeg();
+  setPerformState("rest");
+});
+soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
+
+// Hold-to-capture: pointer (mouse/touch)
+holdBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startManual(); });
+holdBtn.addEventListener("pointerup", stopManual);
+holdBtn.addEventListener("pointerleave", stopManual);
+holdBtn.addEventListener("pointercancel", stopManual);
+
+// Hold-to-capture: Spacebar (manual mode, not while typing)
+window.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || triggerMode !== "manual") return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  e.preventDefault();
+  if (!e.repeat) startManual();
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space" && triggerMode === "manual") { e.preventDefault(); stopManual(); }
+});
 
 // ---------- Helpers ----------
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }

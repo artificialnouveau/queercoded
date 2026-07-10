@@ -32,13 +32,25 @@
       <!-- PERFORM -->
       <div class="tabpane" data-pane="perform">
         <h2>Perform</h2>
-        <p class="muted">Start at rest (standing, arms at your sides). Perform a saved code, then return to rest to trigger it. The matched word appears on screen and is added to your phrase below.</p>
+        <p class="muted">Start at rest (arms at your sides, standing or seated). Perform a saved code, then return to rest to trigger it. The matched word appears on screen and joins your phrase below.</p>
 
         <label class="field">
           <span>Sensitivity <em id="threshVal"></em></span>
           <input id="thresh" type="range" min="0.06" max="0.6" step="0.01" value="0.28" />
           <small class="muted">Left = stricter match. Right = looser. Watch the live match reading while you calibrate.</small>
         </label>
+
+        <label class="field">
+          <span>Trigger</span>
+          <select id="triggerMode">
+            <option value="auto">Auto — return to rest pose (arms at sides / in lap)</option>
+            <option value="manual">Manual — hold the button or Spacebar</option>
+          </select>
+          <small class="muted">Manual mode is a fallback if the rest pose is hard to reach or detect.</small>
+        </label>
+        <button id="holdBtn" class="btn block" hidden>Hold to capture (or hold Space)</button>
+
+        <label class="check"><input type="checkbox" id="soundToggle" checked /> Ping on match</label>
 
         <div class="meter">
           <div class="meter-row"><span>Best match</span><b id="bestWord">—</b></div>
@@ -56,11 +68,12 @@
       <!-- TEACH -->
       <div class="tabpane" data-pane="teach" hidden>
         <h2>Teach a new code</h2>
-        <p class="muted">Name a word or phrase, then record the movement that means it. Begin standing at rest (arms at your sides), perform your movement, then return to rest. Leading and trailing rest is trimmed automatically, so every code starts and ends from the same neutral pose.</p>
+        <p class="muted">Name a word or phrase, then record the movement that means it. Begin at rest (arms at your sides, standing or seated), perform your movement, then return to rest. Leading and trailing rest is trimmed automatically. Record the same word more than once to add examples and make it easier to recognize.</p>
 
         <label class="field">
           <span>Word or phrase</span>
-          <input id="wordInput" type="text" placeholder="e.g. hello / yes / I love you" maxlength="60" />
+          <input id="wordInput" type="text" placeholder="e.g. hello / yes / I love you" maxlength="60" list="wordList" />
+          <datalist id="wordList"></datalist>
         </label>
 
         <label class="field">

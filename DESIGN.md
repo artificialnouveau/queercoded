@@ -64,11 +64,14 @@ remove that:
 
 ## The resting pose (gesture boundaries)
 
-Every gesture starts and ends in a **resting pose**: standing, arms at your
-sides. This gives clean, automatic segmentation without a button press.
+Every gesture starts and ends in a **resting pose**: arms at your sides, whether
+standing or seated. This gives clean, automatic segmentation without a button
+press. For anyone who cannot reliably reach or hold this pose, a **Manual
+trigger** mode (hold a button or Spacebar) captures the movement instead.
 
 `isResting()` is true when both wrists are at/below hip height and horizontally
-close to the body (not extended outward), relative to shoulder width.
+close to the body (not extended outward), relative to shoulder width. Because it
+is defined relative to the hips, it holds for seated users too.
 
 - **Perform:** a small state machine. In `rest`, leaving rest for a couple of
   frames starts a capture. In `move`, returning to rest for a few frames ends
@@ -139,29 +142,40 @@ JSON file is supported for backup and manual sharing today.
 
 ---
 
-## Open questions (input needed)
+## Decisions (confirmed)
 
-These are the decisions that would change the design. Answers from you go here:
+1. **Use / audience:** audience-facing — performance and installation. Favors a
+   clean big-word display, a match sound, and reliable triggering in front of
+   people.
+2. **Dynamic** capture (not static-only): gestures are movement sequences
+   delimited by the rest pose. Implemented.
+3. **Full body — arms and legs:** matching compares all 33 landmarks, so leg and
+   whole-body dance movement counts, not just arms. Implemented.
+4. **Output:** on-screen text **plus a ping** (a short confirmation tone) on each
+   match. A "Ping on match" toggle is in the Perform panel. Implemented.
+5. **Multiple examples per word:** yes. Record the same word several times; each
+   take is stored as an example and the best (nearest) match across a word's
+   examples wins. The Codes list groups examples under one word. Implemented.
+6. **Seated / accessibility:** yes. The rest pose is defined relative to the
+   hips (wrists at/below hip height, close to the body), so it works standing or
+   seated. A **Manual trigger** mode (hold a button or Spacebar) is provided as a
+   fallback for anyone who cannot reliably reach or hold the rest pose.
+   Implemented.
+7. **Shared library:** yes, planned for later. See [SHARING.md](SHARING.md).
+   v1 ships with local storage + JSON export/import.
 
-1. **Audience/use:** performance art, an accessibility/AAC tool, a game, an
-   installation? This drives the tone and which failure modes matter most.
-2. **Static vs dynamic:** should we add an explicit "hold a pose" mode, or is
-   rest-delimited dynamic capture enough?
-3. **Full body vs arms-only:** do legs/dance matter, or should matching weight
-   arms and torso? (Affects which landmarks we compare.)
-4. **Output:** just on-screen text, or also speech (text-to-speech), sound, or
-   visuals per word?
-5. **Multiple examples per word:** allow recording several takes of one word to
-   improve robustness (average/nearest-of-N)?
-6. **Sharing model:** personal only, or a shared library of codes people can
-   browse and load? (See SHARING.md — decide later.)
-7. **Hosting/target:** GitHub Pages is set up; any custom domain?
+Still open: text-to-speech output (in addition to the ping), a dedicated
+full-screen performance view, and per-code thresholds.
 
 ---
 
 ## Roadmap
 
 - [x] v1: teach + perform, rest segmentation, localStorage, export/import
-- [ ] Multiple examples per code; per-code threshold
-- [ ] Optional text-to-speech output
+- [x] Ping on match; sound toggle
+- [x] Multiple examples per word (nearest-of-N matching)
+- [x] Seated support + manual (hold) trigger for accessibility
+- [ ] Optional text-to-speech output per word
+- [ ] Full-screen performance/installation view
+- [ ] Per-code threshold
 - [ ] Shared code library (see [SHARING.md](SHARING.md))
