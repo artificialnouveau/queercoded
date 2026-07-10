@@ -11,8 +11,8 @@
     <h1 class="logo">Queer<span> Coded</span></h1>
     <p class="tagline">Code a movement. Move to speak.</p>
     <nav class="tabs">
-      <button class="tab is-active" data-tab="perform">Perform</button>
-      <button class="tab" data-tab="teach">Teach</button>
+      <button class="tab is-active" data-tab="teach">Teach</button>
+      <button class="tab" data-tab="perform">Perform</button>
       <button class="tab" data-tab="codes">Codes</button>
     </nav>
   </header>
@@ -24,13 +24,13 @@
         <canvas id="overlay"></canvas>
         <div id="bigWord" class="big-word" aria-live="polite"></div>
         <div id="countdown" class="countdown" hidden></div>
-        <div id="status" class="status">Loading pose engine…</div>
+        <div id="status" class="status">Starting…</div>
       </div>
     </section>
 
     <aside class="panel">
       <!-- PERFORM -->
-      <div class="tabpane" data-pane="perform">
+      <div class="tabpane" data-pane="perform" hidden>
         <h2>Perform</h2>
         <p class="muted">Start at rest (arms at your sides, standing or seated). Perform a saved code, then return to rest to trigger it. The matched word appears on screen and joins your phrase below.</p>
 
@@ -66,7 +66,7 @@
       </div>
 
       <!-- TEACH -->
-      <div class="tabpane" data-pane="teach" hidden>
+      <div class="tabpane" data-pane="teach">
         <h2>Teach a new code</h2>
         <p class="muted">Name a word or phrase, then record the movement that means it. Begin at rest (arms at your sides, standing or seated), perform your movement, then return to rest. Leading and trailing rest is trimmed automatically. Record the same word more than once to add examples and make it easier to recognize.</p>
 

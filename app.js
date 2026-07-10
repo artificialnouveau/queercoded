@@ -152,19 +152,25 @@ function saveTemplates() { localStorage.setItem(STORE_KEY, JSON.stringify(templa
 function newId() { return "c_" + Math.random().toString(36).slice(2, 9) + performance.now().toString(36); }
 
 // ---------- MediaPipe ----------
+const MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+
 async function initPose() {
   const fileset = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
-  landmarker = await PoseLandmarker.createFromOptions(fileset, {
-    baseOptions: {
-      modelAssetPath:
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-      delegate: "GPU",
-    },
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath: MODEL_URL, delegate },
     runningMode: "VIDEO",
     numPoses: 1,
   });
+  // GPU is faster but silently fails/hangs on some machines; fall back to CPU.
+  try {
+    landmarker = await PoseLandmarker.createFromOptions(fileset, opts("GPU"));
+  } catch (e) {
+    console.warn("Pose GPU delegate failed, falling back to CPU:", e);
+    landmarker = await PoseLandmarker.createFromOptions(fileset, opts("CPU"));
+  }
 }
 
 async function initCamera() {
@@ -611,15 +617,28 @@ function escapeHtml(s) {
   threshVal.textContent = threshInput.value;
   renderCodeList();
   renderPhrase();
+
+  // The pose engine is a ~15 MB first-time download (wasm + model). Kick it off
+  // in parallel with the camera permission so the two overlap, and reassure the
+  // user it is downloading, not frozen. The browser caches it after first load.
+  let ready = false;
+  statusEl.textContent = "Requesting camera + downloading pose engine (~15 MB first load)…";
+  const slow = setTimeout(() => {
+    if (!ready) statusEl.textContent = "Still downloading the pose engine (first load only). Hang tight…";
+  }, 10000);
+
   try {
-    statusEl.textContent = "Requesting camera…";
-    await initCamera();
-    statusEl.textContent = "Loading pose model…";
-    await initPose();
+    const cam = initCamera().catch((e) => { throw new Error("camera: " + e.message); });
+    const pose = initPose().catch((e) => { throw new Error("pose engine: " + e.message); });
+    await Promise.all([cam, pose]);
+    ready = true;
+    clearTimeout(slow);
+    statusEl.textContent = "Ready.";
     setPerformState("rest");
     loop();
   } catch (err) {
+    clearTimeout(slow);
     console.error(err);
-    statusEl.textContent = "Error: " + err.message + " (camera needs https or localhost)";
+    statusEl.textContent = "Error loading " + err.message + " (camera needs https or localhost).";
   }
 })();
