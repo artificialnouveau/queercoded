@@ -77,8 +77,11 @@ is defined relative to the hips, it holds for seated users too.
   frames starts a capture. In `move`, returning to rest for a few frames ends
   it. The trailing rest frames are trimmed, then the captured movement is
   matched. A capture that never returns to rest is abandoned after 6 s.
-- **Teach:** the fixed-length recording is trimmed of leading and trailing rest
-  frames, so every stored template begins and ends at the same neutral pose.
+- **Teach:** uses the same movement-delimited capture as Perform (no fixed
+  timer). After you hit record it waits until you are at rest, starts capturing
+  when you move, and ends when you return to rest. Leading and trailing rest is
+  trimmed, so every stored template begins and ends at the same neutral pose.
+  In Manual trigger mode the record button becomes a start/stop toggle.
 
 ---
 

@@ -14,6 +14,7 @@ const NUM_LMS = 33;
 const MOVE_TRIGGER_FRAMES = 2;    // frames of "not rest" that start a capture
 const REST_SETTLE_FRAMES = 5;     // frames of "rest" that end a capture
 const MAX_SEG_MS = 6000;          // abandon a capture that never returns to rest
+const MAX_TEACH_MS = 8000;        // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
 const COOLDOWN_MS = 1200;         // min gap before the same word fires again
 
@@ -38,8 +39,6 @@ const soundToggle = document.getElementById("soundToggle");
 const wordList = document.getElementById("wordList");
 
 const wordInput = document.getElementById("wordInput");
-const durInput = document.getElementById("dur");
-const durVal = document.getElementById("durVal");
 const recordBtn = document.getElementById("recordBtn");
 const teachMsg = document.getElementById("teachMsg");
 
@@ -52,7 +51,7 @@ const clearAllBtn = document.getElementById("clearAll");
 // ---------- State ----------
 let landmarker = null;
 let templates = loadTemplates();
-let recording = null; // {frames, rest, endsAt, word, durMs}
+let teach = null;     // active teaching capture (movement-delimited)
 let seg = newSeg();   // live segmentation state
 let lastFireAt = 0;
 let lastFiredWord = "";
@@ -182,7 +181,8 @@ async function initCamera() {
 // ---------- Main loop ----------
 function loop() {
   if (landmarker && video.readyState >= 2) {
-    const res = landmarker.detectForVideo(video, performance.now());
+    const now = performance.now();
+    const res = landmarker.detectForVideo(video, now);
     octx.clearRect(0, 0, overlay.width, overlay.height);
 
     if (res.landmarks && res.landmarks.length > 0) {
@@ -194,17 +194,20 @@ function loop() {
       if (keyLandmarksVisible(lms)) {
         const vec = normalizePose(lms);
         const rest = isResting(lms);
-        const now = performance.now();
-        if (recording) {
-          recording.frames.push(vec);
-          recording.rest.push(rest);
-          if (now >= recording.endsAt) finishRecording();
+        if (teach) {
+          teachStep(vec, rest, now);
         } else if (triggerMode === "manual") {
           if (manualCapturing) manualFrames.push(vec);
         } else {
           segmentStep(vec, rest, now);
         }
       }
+    }
+
+    // Safety cap so a teaching capture can never hang, even if the body leaves
+    // the frame mid-movement.
+    if (teach && teach.state === "capturing" && now - teach.startedAt > MAX_TEACH_MS) {
+      finishTeach(now);
     }
   }
   requestAnimationFrame(loop);
@@ -310,7 +313,7 @@ function ping() {
 
 // ---------- Manual capture (accessibility fallback) ----------
 function startManual() {
-  if (recording || triggerMode !== "manual" || manualCapturing) return;
+  if (teach || triggerMode !== "manual" || manualCapturing) return;
   manualCapturing = true;
   manualFrames = [];
   setPerformState("move");
@@ -340,53 +343,120 @@ function renderPhrase() {
     : phrase.map((w) => `<span class="chip">${escapeHtml(w)}</span>`).join("");
 }
 
-// ---------- Teaching ----------
-async function startRecording() {
+// ---------- Teaching (movement-delimited, like Perform) ----------
+async function startTeach() {
   const word = wordInput.value.trim();
   if (!word) { setTeachMsg("Type a word or phrase first.", "warn"); return; }
-  if (recording) return;
+  if (teach) return;
+
   recordBtn.disabled = true;
-
   countdownEl.hidden = false;
-  countdownEl.textContent = "rest";
   countdownEl.classList.remove("rec");
-  await sleep(600);
-  for (let i = 3; i >= 1; i--) { countdownEl.textContent = i; await sleep(650); }
-  countdownEl.textContent = "GO";
-  countdownEl.classList.add("rec");
+  for (let i = 3; i >= 1; i--) { countdownEl.textContent = i; await sleep(600); }
 
-  const durMs = parseFloat(durInput.value) * 1000;
-  recording = { frames: [], rest: [], endsAt: performance.now() + durMs, word, durMs };
-  setTeachMsg("Recording… perform the movement, then return to rest.", "");
+  const manual = triggerMode === "manual";
+  teach = {
+    word, manual,
+    state: "prime",          // prime -> ready -> capturing (manual jumps straight to capturing)
+    frames: [], rest: [], restCount: 0, moveCount: 0,
+    startedAt: performance.now(),
+  };
+  recordBtn.disabled = false;
+  if (manual) {
+    teach.state = "capturing";
+    countdownEl.textContent = "● REC";
+    countdownEl.classList.add("rec");
+    recordBtn.textContent = "Stop & save";
+    setTeachMsg("Recording… click Stop & save when your movement is done.", "");
+  } else {
+    recordBtn.textContent = "Cancel";
+    setTeachMsg("Rest with your arms down, then perform your movement and return to rest.", "");
+  }
 }
 
-function finishRecording() {
-  const { frames, rest, word, durMs } = recording;
-  recording = null;
-  countdownEl.hidden = true;
-  recordBtn.disabled = false;
-
-  // Trim leading and trailing resting frames so every code starts and ends at rest.
-  let a = 0, b = frames.length;
-  while (a < b && rest[a]) a++;
-  while (b > a && rest[b - 1]) b--;
-  const core = frames.slice(a, b);
-
-  if (core.length < 3) {
-    setTeachMsg("No movement detected between rest poses. Start at rest (arms at sides), perform the movement, then return to rest.", "warn");
+// One frame of a teaching capture. Mirrors Perform: wait for rest, start on
+// movement, end when the body returns to rest. No fixed time limit.
+function teachStep(vec, rest, now) {
+  const t = teach;
+  if (t.manual) {
+    t.frames.push(vec);
+    t.rest.push(rest);
     return;
   }
+  if (t.state === "prime") {
+    countdownEl.textContent = "REST";
+    countdownEl.classList.remove("rec");
+    if (rest) t.state = "ready";
+    return;
+  }
+  if (t.state === "ready") {
+    countdownEl.textContent = "MOVE";
+    if (!rest) {
+      t.moveCount++;
+      if (t.moveCount >= MOVE_TRIGGER_FRAMES) {
+        t.state = "capturing";
+        t.frames = [vec];
+        t.rest = [rest];
+        t.restCount = 0;
+        t.startedAt = now;
+      }
+    } else {
+      t.moveCount = 0;
+    }
+    return;
+  }
+  // capturing
+  countdownEl.textContent = "● REC";
+  countdownEl.classList.add("rec");
+  t.frames.push(vec);
+  t.rest.push(rest);
+  if (rest) {
+    t.restCount++;
+    if (t.restCount >= REST_SETTLE_FRAMES) finishTeach(now);
+  } else {
+    t.restCount = 0;
+  }
+}
+
+function finishTeach(now) {
+  const t = teach;
+  teach = null;
+  countdownEl.hidden = true;
+  countdownEl.classList.remove("rec");
+  recordBtn.disabled = false;
+  recordBtn.textContent = "Record movement";
+
+  // Trim leading and trailing rest so every code starts and ends at rest.
+  let a = 0, b = t.frames.length;
+  while (a < b && t.rest[a]) a++;
+  while (b > a && t.rest[b - 1]) b--;
+  const core = t.frames.slice(a, b);
+
+  if (core.length < 3) {
+    setTeachMsg("No movement detected. Start at rest, perform your movement, then return to rest.", "warn");
+    return;
+  }
+  const durMs = Math.max(300, Math.round(now - t.startedAt));
   const seq = resampleSeq(core, FIXED_LEN);
-  templates.push({ id: newId(), word, seq, durMs, createdAt: Date.now() });
+  templates.push({ id: newId(), word: t.word, seq, durMs, createdAt: Date.now() });
   saveTemplates();
   renderCodeList();
-  const n = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase()).length;
+  const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
   setTeachMsg(
-    n > 1 ? `Saved example ${n} for “${word}”. More examples improve recognition.`
-          : `Saved “${word}”. Switch to Perform to try it.`,
+    n > 1 ? `Saved example ${n} for “${t.word}”. More examples improve recognition.`
+          : `Saved “${t.word}”. Switch to Perform to try it.`,
     "ok"
   );
   wordInput.value = "";
+}
+
+function cancelTeach() {
+  teach = null;
+  countdownEl.hidden = true;
+  countdownEl.classList.remove("rec");
+  recordBtn.disabled = false;
+  recordBtn.textContent = "Record movement";
+  setTeachMsg("Cancelled.", "");
 }
 
 // ---------- Codes list ----------
@@ -495,8 +565,11 @@ document.querySelectorAll(".tab").forEach((tab) => {
   });
 });
 threshInput.addEventListener("input", () => (threshVal.textContent = threshInput.value));
-durInput.addEventListener("input", () => (durVal.textContent = parseFloat(durInput.value).toFixed(1) + "s"));
-recordBtn.addEventListener("click", startRecording);
+recordBtn.addEventListener("click", () => {
+  if (!teach) { startTeach(); return; }
+  if (teach.manual) finishTeach(performance.now());
+  else cancelTeach();
+});
 clearPhraseBtn.addEventListener("click", () => { phrase = []; renderPhrase(); });
 
 triggerModeSel.addEventListener("change", () => {
@@ -536,7 +609,6 @@ function escapeHtml(s) {
 // ---------- Boot ----------
 (async function boot() {
   threshVal.textContent = threshInput.value;
-  durVal.textContent = parseFloat(durInput.value).toFixed(1) + "s";
   renderCodeList();
   renderPhrase();
   try {
