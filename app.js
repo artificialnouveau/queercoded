@@ -10,8 +10,13 @@ const FIXED_LEN = 20;             // frames every gesture is resampled to
 const KEY_LMS = [11, 12, 23, 24]; // shoulders + hips: visibility gate
 const NUM_LMS = 33;
 
-// A gesture is delimited by the RESTING pose (standing, arms at sides).
-const MOVE_TRIGGER_FRAMES = 2;    // frames of "not rest" that start a capture
+// A gesture starts when real MOTION is detected and ends on stillness or the
+// hands-on-hips rest pose. Motion-based starting (rather than "not in the rest
+// pose") means standing anywhere doing nothing can never start a capture.
+const MOVE_EPS = 0.14;            // max-landmark displacement that counts as movement...
+const MOVE_WIN_MS = 250;          // ...measured over this look-back window
+const PREROLL_MS = 300;           // include this much pre-movement history in the capture
+const IDLE_BUF_MS = 800;          // rolling history kept while idle
 const REST_SETTLE_FRAMES = 5;     // frames of "rest" that end a capture
 // Holding still ALSO ends a capture (fallback for marginal hands-on-hips
 // detection). "Still" means the FASTEST single landmark barely moved over a
@@ -76,7 +81,34 @@ let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
 
 function newSeg() {
-  return { state: "rest", frames: [], rest: [], times: [], restCount: 0, moveCount: 0, stillCount: 0, startedAt: 0 };
+  return { state: "idle", buf: [], frames: [], rest: [], times: [], restCount: 0, stillCount: 0, startedAt: 0 };
+}
+
+// Rolling idle-history helpers. The buffer holds {vec, rest, t} entries so a
+// capture can start on detected motion and still include a short preroll.
+function pushIdle(buf, vec, rest, t) {
+  buf.push({ vec, rest, t });
+  while (buf.length && buf[0].t < t - IDLE_BUF_MS) buf.shift();
+}
+
+// True when some landmark has moved meaningfully within the look-back window.
+function isMovingNow(buf, now) {
+  const last = buf[buf.length - 1];
+  for (let i = buf.length - 2; i >= 0; i--) {
+    if (now - buf[i].t >= MOVE_WIN_MS) return maxPoseDist(last.vec, buf[i].vec) > MOVE_EPS;
+  }
+  return false; // not enough history yet
+}
+
+// Seed a capture from the idle buffer: everything from PREROLL_MS before now.
+function prerollFrom(buf, now) {
+  const start = now - PREROLL_MS;
+  const picked = buf.filter((e) => e.t >= start);
+  return {
+    frames: picked.map((e) => e.vec),
+    rest: picked.map((e) => e.rest),
+    times: picked.map((e) => e.t),
+  };
 }
 
 // Largest single-landmark displacement between two pose vectors.
@@ -106,20 +138,29 @@ function isStillNow(frames, times, now) {
   );
 }
 
-// Trailing-frame trim shared by teach and perform: walk back over frames that
-// are at rest or match the final settle pose, so a capture ends where the
-// movement ended. Bounded so a slow deliberate ending is not eaten.
-function trimTrailing(frames, rest, times) {
+// Capture trim shared by teach and perform: drop leading preroll/rest frames
+// and trailing rest/settle frames so a capture spans exactly the movement.
+// Both ends are bounded so slow deliberate starts and endings are not eaten.
+function trimCapture(frames, rest, times) {
+  // Leading: frames still matching the starting pose, within the preroll span.
+  let a = 0;
+  const first = frames[0];
+  while (a < frames.length - 1) {
+    if (rest[a]) { a++; continue; }
+    const withinWindow = times[a] - times[0] <= PREROLL_MS + STILL_WIN_SHORT_MS;
+    if (withinWindow && maxPoseDist(frames[a], first) < STILL_EPS) { a++; continue; }
+    break;
+  }
+  // Trailing: frames matching the final settle pose, within the settle span.
   let b = frames.length;
   const last = frames[b - 1];
-  const endT = times ? times[b - 1] : null;
-  while (b > 1) {
+  while (b > a + 1) {
     if (rest[b - 1]) { b--; continue; }
-    const withinWindow = !endT || endT - times[b - 1] <= STILL_WIN_LONG_MS + STILL_WIN_SHORT_MS;
+    const withinWindow = times[frames.length - 1] - times[b - 1] <= STILL_WIN_LONG_MS + STILL_WIN_SHORT_MS;
     if (withinWindow && maxPoseDist(frames[b - 1], last) < STILL_EPS) { b--; continue; }
     break;
   }
-  return frames.slice(0, b);
+  return frames.slice(a, b);
 }
 
 // ---------- Geometry ----------
@@ -150,14 +191,48 @@ function keyLandmarksVisible(lms) {
 // "Resting" = hands on hips: each wrist sits near its hip. Chosen because it
 // keeps the hands within a close upper-body camera framing (no need to see the
 // legs) and is a distinct, easy-to-hold neutral pose.
+//
+// The wrist landmark sits above/outside the hip landmark in this pose, so the
+// enter threshold is generous, and hysteresis (looser exit than enter) stops
+// the boundary flicker that was arming phantom captures.
+const REST_ENTER = 0.85;  // wrist-to-hip distance (in shoulder widths) to enter rest
+const REST_EXIT = 1.15;   // distance to leave rest once in it
+let wasResting = false;
+let restInfo = null;      // per-frame info for drawing the hip target circles
+
 function isResting(lms) {
   const lw = lms[15], rw = lms[16], lh = lms[23], rh = lms[24], ls = lms[11], rs = lms[12];
-  if ((lw?.visibility ?? 0) < 0.35 || (rw?.visibility ?? 0) < 0.35) return false;
-  if ((lh?.visibility ?? 0) < 0.35 || (rh?.visibility ?? 0) < 0.35) return false;
+  restInfo = null;
+  if ((lw?.visibility ?? 0) < 0.35 || (rw?.visibility ?? 0) < 0.35) { wasResting = false; return false; }
+  if ((lh?.visibility ?? 0) < 0.35 || (rh?.visibility ?? 0) < 0.35) { wasResting = false; return false; }
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
   const dL = Math.hypot(lw.x - lh.x, lw.y - lh.y) / scale;
   const dR = Math.hypot(rw.x - rh.x, rw.y - rh.y) / scale;
-  return dL < 0.55 && dR < 0.55;
+  const thr = wasResting ? REST_EXIT : REST_ENTER;
+  wasResting = dL < thr && dR < thr;
+  restInfo = { lh, rh, scale, dL, dR };
+  return wasResting;
+}
+
+// Visual guide: circles on the hips that light up when each wrist is close
+// enough to count as "hands on hips". Lets the performer see the target
+// instead of guessing at an invisible threshold.
+function drawRestTargets() {
+  if (!restInfo) return;
+  const { lh, rh, scale, dL, dR } = restInfo;
+  const r = REST_ENTER * scale * overlay.width * 0.9;
+  for (const [hip, d] of [[lh, dL], [rh, dR]]) {
+    const inRange = d < (wasResting ? REST_EXIT : REST_ENTER);
+    octx.beginPath();
+    octx.arc(hip.x * overlay.width, hip.y * overlay.height, r, 0, Math.PI * 2);
+    octx.strokeStyle = inRange ? "rgba(52,211,153,0.9)" : "rgba(255,255,255,0.5)";
+    octx.lineWidth = inRange ? 4 : 2;
+    octx.stroke();
+    if (inRange) {
+      octx.fillStyle = "rgba(52,211,153,0.15)";
+      octx.fill();
+    }
+  }
 }
 
 // Mean per-landmark euclidean distance between two normalized pose vectors.
@@ -266,6 +341,10 @@ function loop() {
         } else {
           segmentStep(vec, restNow, now);
         }
+        // Hip target circles: visible whenever a movement could start or a
+        // rest pose would end one, so the pose threshold is never a guess.
+        const capturing = teach ? teach.state === "capturing" && teach.manual : false;
+        if (triggerMode === "auto" && !playback && !capturing) drawRestTargets();
       }
     }
 
@@ -286,22 +365,19 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
-// ---------- Rest-delimited segmentation ----------
+// ---------- Motion-delimited segmentation ----------
 function segmentStep(vec, rest, now) {
-  if (seg.state === "rest") {
-    if (!rest) {
-      seg.moveCount++;
-      if (seg.moveCount >= MOVE_TRIGGER_FRAMES) {
-        seg.state = "move";
-        seg.frames = [vec];
-        seg.rest = [rest];
-        seg.times = [now];
-        seg.startedAt = now;
-        seg.restCount = 0;
-        seg.stillCount = 0;
-      }
-    } else {
-      seg.moveCount = 0;
+  if (seg.state === "idle") {
+    pushIdle(seg.buf, vec, rest, now);
+    if (isMovingNow(seg.buf, now)) {
+      const pre = prerollFrom(seg.buf, now);
+      seg.state = "move";
+      seg.frames = pre.frames;
+      seg.rest = pre.rest;
+      seg.times = pre.times;
+      seg.startedAt = now;
+      seg.restCount = 0;
+      seg.stillCount = 0;
     }
     setPerformState("rest");
     return;
@@ -323,7 +399,7 @@ function segmentStep(vec, rest, now) {
 }
 
 function closeSegment(now) {
-  const frames = trimTrailing(seg.frames, seg.rest, seg.times);
+  const frames = trimCapture(seg.frames, seg.rest, seg.times);
   seg = newSeg();
   setPerformState("rest");
   if (frames.length >= MIN_SEG_FRAMES) matchAndFire(frames, now);
@@ -351,7 +427,7 @@ function matchAndFire(frames, now) {
 function setPerformState(s) {
   if (!landmarker) return;
   if (s === "move") { statusEl.textContent = "● capturing movement…"; return; }
-  statusEl.textContent = triggerMode === "manual" ? "● ready — hold to capture" : "● resting — perform a code";
+  statusEl.textContent = triggerMode === "manual" ? "● ready — hold to capture" : "● watching — perform a code";
 }
 
 function fireWord(word, now) {
@@ -431,7 +507,7 @@ async function startTeach() {
   teach = {
     word, manual,
     state: "prime",          // prime -> ready -> capturing (manual jumps straight to capturing)
-    frames: [], rest: [], times: [], restCount: 0, moveCount: 0, stillCount: 0,
+    buf: [], frames: [], rest: [], times: [], restCount: 0, stillCount: 0,
     startedAt: performance.now(),
   };
   recordBtn.disabled = false;
@@ -458,23 +534,23 @@ function teachStep(vec, rest, now) {
     return;
   }
   if (t.state === "prime") {
-    if (rest) t.state = "ready";
+    // Settle first: hands on hips, or simply holding still for a beat.
+    pushIdle(t.buf, vec, rest, now);
+    const spans = t.buf.length > 1 && now - t.buf[0].t >= STILL_WIN_LONG_MS;
+    if (rest || (spans && !isMovingNow(t.buf, now))) t.state = "ready";
     return;
   }
   if (t.state === "ready") {
-    if (!rest) {
-      t.moveCount++;
-      if (t.moveCount >= MOVE_TRIGGER_FRAMES) {
-        t.state = "capturing";
-        t.frames = [vec];
-        t.rest = [rest];
-        t.times = [now];
-        t.restCount = 0;
-        t.stillCount = 0;
-        t.startedAt = now;
-      }
-    } else {
-      t.moveCount = 0;
+    pushIdle(t.buf, vec, rest, now);
+    if (isMovingNow(t.buf, now)) {
+      const pre = prerollFrom(t.buf, now);
+      t.state = "capturing";
+      t.frames = pre.frames;
+      t.rest = pre.rest;
+      t.times = pre.times;
+      t.restCount = 0;
+      t.stillCount = 0;
+      t.startedAt = now;
     }
     return;
   }
@@ -515,12 +591,10 @@ function updateTeachUI(bodyVisible, rest) {
   countdownEl.classList.remove("rec");
   if (t.state === "prime") {
     countdownEl.textContent = "REST";
-    statusEl.textContent = rest
-      ? "Rest detected. Get ready…"
-      : "Put both hands on your hips.";
+    statusEl.textContent = "Hold still for a moment (hands on hips if you like).";
   } else { // ready
     countdownEl.textContent = "MOVE";
-    statusEl.textContent = "Now perform your movement.";
+    statusEl.textContent = "Ready. Perform your movement, then hold still.";
   }
 }
 
@@ -535,12 +609,10 @@ function finishTeach(now, timedOut = false) {
 
   // Trim leading rest and trailing rest/stillness so every code starts and
   // ends where the movement actually happened.
-  let a = 0;
-  while (a < t.frames.length && t.rest[a]) a++;
-  const core = trimTrailing(t.frames.slice(a), t.rest.slice(a), t.times.slice(a));
+  const core = t.frames.length ? trimCapture(t.frames, t.rest, t.times) : [];
 
   if (core.length < 3) {
-    setTeachMsg("No movement detected. Start at rest, perform your movement, then return to rest.", "warn");
+    setTeachMsg("No movement captured. Hold still, perform your movement, then hold still again.", "warn");
     return;
   }
   const durMs = Math.max(300, Math.round(now - t.startedAt));

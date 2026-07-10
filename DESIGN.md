@@ -64,17 +64,20 @@ remove that:
 
 ## The resting pose (gesture boundaries)
 
-Every gesture starts and ends in a **resting pose**: hands on hips. This was
-chosen over arms-at-sides so the hands stay inside a close upper-body camera
-frame (no need to see the legs), and because it is a distinct, easy-to-hold
-pose. It gives clean, automatic segmentation without a button press. For anyone
-who cannot reliably reach or hold it, a **Manual trigger** mode (hold a button
-or Spacebar) captures the movement instead.
+Gestures are **motion-delimited**: a capture starts when real movement is
+detected (the fastest landmark travels past a threshold within a short window,
+with a ~300 ms preroll so the start of the movement is kept) and ends on
+**stillness** (~0.5 s of no landmark motion) or on the **hands-on-hips rest
+pose**. Standing around doing nothing can never start a capture. For anyone who
+prefers explicit control, a **Manual trigger** mode (hold a button or Spacebar)
+captures instead.
 
-`isResting()` is true when each wrist sits near its hip: the wrist-to-hip
-distance, normalized by shoulder width, is below a threshold for both hands. It
-needs only the upper body (shoulders, hips, wrists) to be visible, so it works
-with the camera close in and works seated too.
+`isResting()` is true when each wrist sits near its hip (distance normalized by
+shoulder width), with hysteresis: easier to enter than to leave, which stops
+boundary flicker. The app draws **target circles on the hips** that light up
+when each wrist is close enough, so the threshold is visible rather than
+guessed. Only the upper body (shoulders, hips, wrists) needs to be in frame, so
+close framing and seated use both work.
 
 - **Perform:** a small state machine. In `rest`, leaving rest for a couple of
   frames starts a capture. In `move`, returning to rest for a few frames ends
