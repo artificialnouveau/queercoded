@@ -64,6 +64,7 @@ let soundOn = true;
 let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
+let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
 
 function newSeg() {
   return { state: "rest", frames: [], rest: [], restCount: 0, moveCount: 0, startedAt: 0 };
@@ -88,7 +89,10 @@ function normalizePose(lms) {
 }
 
 function keyLandmarksVisible(lms) {
-  return KEY_LMS.every((i) => (lms[i]?.visibility ?? 0) > 0.5);
+  // 0.35 rather than 0.5: with a close upper-body framing the hips often sit
+  // right at the frame edge and hover around 0.4 visibility. Gating at 0.5
+  // made detection flicker, which froze the teach state machine.
+  return KEY_LMS.every((i) => (lms[i]?.visibility ?? 0) > 0.35);
 }
 
 // "Resting" = hands on hips: each wrist sits near its hip. Chosen because it
@@ -96,8 +100,8 @@ function keyLandmarksVisible(lms) {
 // legs) and is a distinct, easy-to-hold neutral pose.
 function isResting(lms) {
   const lw = lms[15], rw = lms[16], lh = lms[23], rh = lms[24], ls = lms[11], rs = lms[12];
-  if ((lw?.visibility ?? 0) < 0.5 || (rw?.visibility ?? 0) < 0.5) return false;
-  if ((lh?.visibility ?? 0) < 0.5 || (rh?.visibility ?? 0) < 0.5) return false;
+  if ((lw?.visibility ?? 0) < 0.35 || (rw?.visibility ?? 0) < 0.35) return false;
+  if ((lh?.visibility ?? 0) < 0.35 || (rh?.visibility ?? 0) < 0.35) return false;
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
   const dL = Math.hypot(lw.x - lh.x, lw.y - lh.y) / scale;
   const dR = Math.hypot(rw.x - rh.x, rw.y - rh.y) / scale;
@@ -192,6 +196,7 @@ function loop() {
     const res = landmarker.detectForVideo(video, now);
     octx.clearRect(0, 0, overlay.width, overlay.height);
 
+    let bodyVisible = false, restNow = false;
     if (res.landmarks && res.landmarks.length > 0) {
       const lms = res.landmarks[0];
       if (!du) du = new DrawingUtils(octx);
@@ -199,22 +204,31 @@ function loop() {
       du.drawLandmarks(lms, { color: "#ff4d9d", radius: 3, lineWidth: 1 });
 
       if (keyLandmarksVisible(lms)) {
+        bodyVisible = true;
         const vec = normalizePose(lms);
-        const rest = isResting(lms);
+        restNow = isResting(lms);
         if (teach) {
-          teachStep(vec, rest, now);
+          teachStep(vec, restNow, now);
         } else if (triggerMode === "manual") {
           if (manualCapturing) manualFrames.push(vec);
         } else {
-          segmentStep(vec, rest, now);
+          segmentStep(vec, restNow, now);
         }
       }
     }
 
+    // The teach overlay is driven here, EVERY frame, not inside the
+    // detection-gated branch. Otherwise losing sight of the body freezes the
+    // on-screen state ("stuck on 1" / stale REC) while the state machine waits.
+    if (teach) updateTeachUI(bodyVisible, restNow);
+
+    // Ghost playback of a saved code, drawn on top of the live view.
+    if (playback) drawPlayback(now);
+
     // Safety cap so a teaching capture can never hang, even if the body leaves
     // the frame mid-movement.
     if (teach && teach.state === "capturing" && now - teach.startedAt > MAX_TEACH_MS) {
-      finishTeach(now);
+      finishTeach(now, true);
     }
   }
   requestAnimationFrame(loop);
@@ -371,7 +385,7 @@ async function startTeach() {
   recordBtn.disabled = false;
   if (manual) {
     teach.state = "capturing";
-    countdownEl.textContent = "● REC";
+    countdownEl.textContent = "REC";
     countdownEl.classList.add("rec");
     recordBtn.textContent = "Stop & save";
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
@@ -391,13 +405,10 @@ function teachStep(vec, rest, now) {
     return;
   }
   if (t.state === "prime") {
-    countdownEl.textContent = "REST";
-    countdownEl.classList.remove("rec");
     if (rest) t.state = "ready";
     return;
   }
   if (t.state === "ready") {
-    countdownEl.textContent = "MOVE";
     if (!rest) {
       t.moveCount++;
       if (t.moveCount >= MOVE_TRIGGER_FRAMES) {
@@ -413,25 +424,58 @@ function teachStep(vec, rest, now) {
     return;
   }
   // capturing
-  countdownEl.textContent = "● REC";
-  countdownEl.classList.add("rec");
   t.frames.push(vec);
   t.rest.push(rest);
   if (rest) {
     t.restCount++;
-    if (t.restCount >= REST_SETTLE_FRAMES) finishTeach(now);
+    if (t.restCount >= REST_SETTLE_FRAMES) finishTeach(now, false);
   } else {
     t.restCount = 0;
   }
 }
 
-function finishTeach(now) {
+// On-screen overlay for the teach flow, driven every frame so it can also say
+// when the body is NOT being detected instead of silently freezing.
+function updateTeachUI(bodyVisible, rest) {
+  const t = teach;
+  if (!t) return;
+  countdownEl.hidden = false;
+  if (!bodyVisible) {
+    countdownEl.textContent = "?";
+    countdownEl.classList.remove("rec");
+    statusEl.textContent = "Can't see your shoulders and hips. Adjust your framing.";
+    return;
+  }
+  if (t.manual || t.state === "capturing") {
+    countdownEl.textContent = "REC";
+    countdownEl.classList.add("rec");
+    statusEl.textContent = t.manual
+      ? "Recording. Click Stop & save when done."
+      : rest
+        ? "Recording. Hold hands on hips to finish…"
+        : "Recording. Return to hands on hips to finish.";
+    return;
+  }
+  countdownEl.classList.remove("rec");
+  if (t.state === "prime") {
+    countdownEl.textContent = "REST";
+    statusEl.textContent = rest
+      ? "Rest detected. Get ready…"
+      : "Put both hands on your hips.";
+  } else { // ready
+    countdownEl.textContent = "MOVE";
+    statusEl.textContent = "Now perform your movement.";
+  }
+}
+
+function finishTeach(now, timedOut = false) {
   const t = teach;
   teach = null;
   countdownEl.hidden = true;
   countdownEl.classList.remove("rec");
   recordBtn.disabled = false;
   recordBtn.textContent = "Record movement";
+  setPerformState("rest");
 
   // Trim leading and trailing rest so every code starts and ends at rest.
   let a = 0, b = t.frames.length;
@@ -449,11 +493,11 @@ function finishTeach(now) {
   saveTemplates();
   renderCodeList();
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
-  setTeachMsg(
-    n > 1 ? `Saved example ${n} for “${t.word}”. More examples improve recognition.`
-          : `Saved “${t.word}”. Switch to Perform to try it.`,
-    "ok"
-  );
+  let msg = n > 1
+    ? `Saved example ${n} for “${t.word}”. More examples improve recognition.`
+    : `Saved “${t.word}”. Switch to Perform to try it.`;
+  if (timedOut) msg += " (Recording hit its time cap; hands-on-hips was not detected to end it.)";
+  setTeachMsg(msg, "ok");
   wordInput.value = "";
 }
 
@@ -463,7 +507,65 @@ function cancelTeach() {
   countdownEl.classList.remove("rec");
   recordBtn.disabled = false;
   recordBtn.textContent = "Record movement";
+  setPerformState("rest");
   setTeachMsg("Cancelled.", "");
+}
+
+// ---------- Ghost playback of saved codes ----------
+// The stored seq is normalized (hip-midpoint origin, torso-length scale), so a
+// synthetic skeleton is reprojected into image space at a fixed center/size and
+// tweened between the stored frames. No video is stored or replayed, only the
+// coordinate movement.
+const GHOST_CX = 0.5;    // horizontal center (image-normalized)
+const GHOST_CY = 0.5;    // vertical hip position
+const GHOST_SCALE = 0.18; // torso length as a fraction of image space
+
+function startPlayback(word) {
+  const items = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase());
+  if (items.length === 0) return;
+  playback = { word, items, idx: 0, t0: performance.now() };
+  renderCodeList();
+}
+
+function stopPlayback() {
+  playback = null;
+  if (landmarker) setPerformState("rest");
+  renderCodeList();
+}
+
+function drawPlayback(now) {
+  const pb = playback;
+  const cur = pb.items[pb.idx];
+  const dur = Math.min(5000, Math.max(800, cur.durMs || 2000));
+  const p = (now - pb.t0) / dur;
+  if (p >= 1) {
+    pb.idx++;
+    pb.t0 = now;
+    if (pb.idx >= pb.items.length) { stopPlayback(); return; }
+    return;
+  }
+
+  // Tween between the two nearest stored frames.
+  const f = p * (FIXED_LEN - 1);
+  const i = Math.floor(f);
+  const frac = f - i;
+  const a = cur.seq[i], b = cur.seq[Math.min(i + 1, FIXED_LEN - 1)];
+  const ghost = [];
+  for (let k = 0; k < NUM_LMS; k++) {
+    const vx = a[k * 2] * (1 - frac) + b[k * 2] * frac;
+    const vy = a[k * 2 + 1] * (1 - frac) + b[k * 2 + 1] * frac;
+    ghost.push({ x: GHOST_CX + vx * GHOST_SCALE, y: GHOST_CY + vy * GHOST_SCALE, visibility: 1 });
+  }
+
+  if (!du) du = new DrawingUtils(octx);
+  du.drawConnectors(ghost, PoseLandmarker.POSE_CONNECTIONS, {
+    color: "rgba(255,195,113,0.95)",
+    lineWidth: 5,
+  });
+  du.drawLandmarks(ghost, { color: "#ffffff", radius: 4, lineWidth: 1 });
+
+  statusEl.textContent =
+    `Playing “${pb.word}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
 }
 
 // ---------- Codes list ----------
@@ -494,28 +596,35 @@ function renderCodeList() {
   for (const g of groups.values()) {
     const count = g.items.length;
     const last = Math.max(...g.items.map((t) => t.createdAt));
+    const isPlaying = playback && playback.word.toLowerCase() === g.word.toLowerCase();
+    const w = encodeURIComponent(g.word);
     const li = document.createElement("li");
     li.className = "code-item";
     li.innerHTML = `
-      <div>
+      <div class="code-info" data-act="play" data-word="${w}" title="Play this movement">
         <div class="word">${escapeHtml(g.word)}<span class="count">${count} example${count > 1 ? "s" : ""}</span></div>
-        <div class="meta">${new Date(last).toLocaleDateString()}</div>
+        <div class="meta">${new Date(last).toLocaleDateString()} · click to play</div>
       </div>
       <div class="row-actions">
-        <button class="btn small" data-act="rename" data-word="${encodeURIComponent(g.word)}">Rename</button>
-        <button class="btn small danger" data-act="del" data-word="${encodeURIComponent(g.word)}">Delete</button>
+        <button class="btn small ${isPlaying ? "playing" : ""}" data-act="play" data-word="${w}">${isPlaying ? "Stop" : "Play"}</button>
+        <button class="btn small" data-act="rename" data-word="${w}">Rename</button>
+        <button class="btn small danger" data-act="del" data-word="${w}">Delete</button>
       </div>`;
     codeList.appendChild(li);
   }
 }
 
 codeList.addEventListener("click", (e) => {
-  const btn = e.target.closest("button");
+  const btn = e.target.closest("[data-act]");
   if (!btn) return;
   const act = btn.dataset.act;
   const word = decodeURIComponent(btn.dataset.word || "");
   const matches = (t) => t.word.toLowerCase() === word.toLowerCase();
-  if (act === "del") {
+  if (act === "play") {
+    if (playback && playback.word.toLowerCase() === word.toLowerCase()) stopPlayback();
+    else startPlayback(word);
+  } else if (act === "del") {
+    stopPlayback();
     if (!confirm(`Delete “${word}” and all its examples?`)) return;
     templates = templates.filter((t) => !matches(t));
     saveTemplates();

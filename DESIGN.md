@@ -181,6 +181,8 @@ full-screen performance view, and per-code thresholds.
 - [x] Ping on match; sound toggle
 - [x] Multiple examples per word (nearest-of-N matching)
 - [x] Seated support + manual (hold) trigger for accessibility
+- [x] Ghost playback: click a saved code to replay its skeleton movement
+  (reprojected from stored coordinates, no video involved)
 - [ ] Optional text-to-speech output per word
 - [ ] Full-screen performance/installation view
 - [ ] Per-code threshold
