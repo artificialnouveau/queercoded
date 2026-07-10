@@ -13,12 +13,15 @@ const NUM_LMS = 33;
 // A gesture is delimited by the RESTING pose (standing, arms at sides).
 const MOVE_TRIGGER_FRAMES = 2;    // frames of "not rest" that start a capture
 const REST_SETTLE_FRAMES = 5;     // frames of "rest" that end a capture
-// Holding still ALSO ends a capture. This is the fallback for when the
-// hands-on-hips detection is marginal, so REC never lingers after the
-// movement is really over.
-const STILL_EPS = 0.018;          // mean per-landmark motion counting as "still"
-const STILL_FRAMES = 12;          // ~0.4 s of stillness ends a capture
-const STILL_TRIM_MAX = STILL_FRAMES * 2; // cap on trailing-still trim (protects slow endings)
+// Holding still ALSO ends a capture (fallback for marginal hands-on-hips
+// detection). "Still" means the FASTEST single landmark barely moved over a
+// short time window. Max-over-landmarks matters: a one-arm gesture moves only
+// a few of the 33 landmarks, so a mean would read as still mid-gesture.
+// Time-window based so it is frame-rate independent.
+const STILL_WIN_SHORT_MS = 220;   // compare against ~this long ago...
+const STILL_WIN_LONG_MS = 450;    // ...and this long ago (catches oscillation)
+const STILL_EPS = 0.09;           // max-landmark displacement counting as still
+const STILL_CONSEC = 3;           // consecutive still frames required to end
 const MAX_SEG_MS = 6000;          // abandon a capture that never returns to rest
 const MAX_TEACH_MS = 8000;        // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
@@ -73,20 +76,47 @@ let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
 
 function newSeg() {
-  return { state: "rest", frames: [], rest: [], restCount: 0, moveCount: 0, stillCount: 0, startedAt: 0 };
+  return { state: "rest", frames: [], rest: [], times: [], restCount: 0, moveCount: 0, stillCount: 0, startedAt: 0 };
+}
+
+// Largest single-landmark displacement between two pose vectors.
+function maxPoseDist(a, b) {
+  let m = 0;
+  for (let i = 0; i < a.length; i += 2) {
+    const d = Math.hypot(a[i] - b[i], a[i + 1] - b[i + 1]);
+    if (d > m) m = d;
+  }
+  return m;
+}
+
+// True when no landmark has moved meaningfully over the recent time window.
+// Checks two lags so a periodic movement (a wave returning to the same pose)
+// is not mistaken for stillness.
+function isStillNow(frames, times, now) {
+  const last = frames[frames.length - 1];
+  let iShort = -1, iLong = -1;
+  for (let i = times.length - 1; i >= 0; i--) {
+    if (iShort < 0 && times[i] <= now - STILL_WIN_SHORT_MS) iShort = i;
+    if (times[i] <= now - STILL_WIN_LONG_MS) { iLong = i; break; }
+  }
+  if (iLong < 0) return false; // capture younger than the long window
+  return (
+    maxPoseDist(last, frames[iShort]) < STILL_EPS &&
+    maxPoseDist(last, frames[iLong]) < STILL_EPS
+  );
 }
 
 // Trailing-frame trim shared by teach and perform: walk back over frames that
-// are at rest or (bounded) motionless, so a capture ends where the movement
-// ended rather than including the settle.
-function trimTrailing(frames, rest) {
+// are at rest or match the final settle pose, so a capture ends where the
+// movement ended. Bounded so a slow deliberate ending is not eaten.
+function trimTrailing(frames, rest, times) {
   let b = frames.length;
-  let stillTrimmed = 0;
+  const last = frames[b - 1];
+  const endT = times ? times[b - 1] : null;
   while (b > 1) {
     if (rest[b - 1]) { b--; continue; }
-    if (stillTrimmed < STILL_TRIM_MAX && poseDist(frames[b - 1], frames[b - 2]) < STILL_EPS) {
-      b--; stillTrimmed++; continue;
-    }
+    const withinWindow = !endT || endT - times[b - 1] <= STILL_WIN_LONG_MS + STILL_WIN_SHORT_MS;
+    if (withinWindow && maxPoseDist(frames[b - 1], last) < STILL_EPS) { b--; continue; }
     break;
   }
   return frames.slice(0, b);
@@ -265,8 +295,10 @@ function segmentStep(vec, rest, now) {
         seg.state = "move";
         seg.frames = [vec];
         seg.rest = [rest];
+        seg.times = [now];
         seg.startedAt = now;
         seg.restCount = 0;
+        seg.stillCount = 0;
       }
     } else {
       seg.moveCount = 0;
@@ -278,11 +310,11 @@ function segmentStep(vec, rest, now) {
   // state === "move"
   seg.frames.push(vec);
   seg.rest.push(rest);
-  const prev = seg.frames[seg.frames.length - 2];
-  seg.stillCount = prev && poseDist(vec, prev) < STILL_EPS ? seg.stillCount + 1 : 0;
+  seg.times.push(now);
+  seg.stillCount = isStillNow(seg.frames, seg.times, now) ? seg.stillCount + 1 : 0;
   if (rest) seg.restCount++;
   else seg.restCount = 0;
-  if (seg.restCount >= REST_SETTLE_FRAMES || seg.stillCount >= STILL_FRAMES) {
+  if (seg.restCount >= REST_SETTLE_FRAMES || seg.stillCount >= STILL_CONSEC) {
     closeSegment(now);
     return;
   }
@@ -291,7 +323,7 @@ function segmentStep(vec, rest, now) {
 }
 
 function closeSegment(now) {
-  const frames = trimTrailing(seg.frames, seg.rest);
+  const frames = trimTrailing(seg.frames, seg.rest, seg.times);
   seg = newSeg();
   setPerformState("rest");
   if (frames.length >= MIN_SEG_FRAMES) matchAndFire(frames, now);
@@ -399,7 +431,7 @@ async function startTeach() {
   teach = {
     word, manual,
     state: "prime",          // prime -> ready -> capturing (manual jumps straight to capturing)
-    frames: [], rest: [], restCount: 0, moveCount: 0, stillCount: 0,
+    frames: [], rest: [], times: [], restCount: 0, moveCount: 0, stillCount: 0,
     startedAt: performance.now(),
   };
   recordBtn.disabled = false;
@@ -422,6 +454,7 @@ function teachStep(vec, rest, now) {
   if (t.manual) {
     t.frames.push(vec);
     t.rest.push(rest);
+    t.times.push(now);
     return;
   }
   if (t.state === "prime") {
@@ -435,6 +468,7 @@ function teachStep(vec, rest, now) {
         t.state = "capturing";
         t.frames = [vec];
         t.rest = [rest];
+        t.times = [now];
         t.restCount = 0;
         t.stillCount = 0;
         t.startedAt = now;
@@ -447,11 +481,11 @@ function teachStep(vec, rest, now) {
   // capturing
   t.frames.push(vec);
   t.rest.push(rest);
-  const prev = t.frames[t.frames.length - 2];
-  t.stillCount = prev && poseDist(vec, prev) < STILL_EPS ? (t.stillCount || 0) + 1 : 0;
+  t.times.push(now);
+  t.stillCount = isStillNow(t.frames, t.times, now) ? t.stillCount + 1 : 0;
   if (rest) t.restCount++;
   else t.restCount = 0;
-  if (t.restCount >= REST_SETTLE_FRAMES || t.stillCount >= STILL_FRAMES) {
+  if (t.restCount >= REST_SETTLE_FRAMES || t.stillCount >= STILL_CONSEC) {
     finishTeach(now, false);
   }
 }
@@ -503,7 +537,7 @@ function finishTeach(now, timedOut = false) {
   // ends where the movement actually happened.
   let a = 0;
   while (a < t.frames.length && t.rest[a]) a++;
-  const core = trimTrailing(t.frames.slice(a), t.rest.slice(a));
+  const core = trimTrailing(t.frames.slice(a), t.rest.slice(a), t.times.slice(a));
 
   if (core.length < 3) {
     setTeachMsg("No movement detected. Start at rest, perform your movement, then return to rest.", "warn");
