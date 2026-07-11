@@ -76,6 +76,9 @@ let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
+// Latest live-body anchor {cx, cy, torso, at}, used to project the playback
+// ghost onto the performer instead of a fixed spot on screen.
+let liveFrame = null;
 
 function newSeg() {
   return { state: "idle", frames: [], near: [], startedAt: 0, restSince: 0 };
@@ -444,6 +447,11 @@ async function runFrame() {
       if (keyLandmarksVisible(lms)) {
         bodyVisible = true;
         const vec = normalizePose(lms);
+        // Live hip-centre and torso length, so playback can be drawn on the
+        // performer's actual body (same normalization the stored seq uses).
+        const cx = (lms[23].x + lms[24].x) / 2, cy = (lms[23].y + lms[24].y) / 2;
+        const shx = (lms[11].x + lms[12].x) / 2, shy = (lms[11].y + lms[12].y) / 2;
+        liveFrame = { cx, cy, torso: Math.hypot(shx - cx, shy - cy) || 1e-6, at: now };
         restNow = isResting(lms);
         const nearNow = isNearFace();
         if (teach) {
@@ -899,6 +907,13 @@ function drawPlayback(now) {
     return;
   }
 
+  // Anchor the ghost on the live body when one is visible (so it dances on the
+  // performer at their position and size), else fall back to a fixed spot.
+  const live = liveFrame && (now - liveFrame.at < 300);
+  const ax = live ? liveFrame.cx : GHOST_CX;
+  const ay = live ? liveFrame.cy : GHOST_CY;
+  const asc = live ? liveFrame.torso : GHOST_SCALE;
+
   // Tween between the two nearest stored frames.
   const f = p * (FIXED_LEN - 1);
   const i = Math.floor(f);
@@ -911,7 +926,7 @@ function drawPlayback(now) {
     // Slots a 17-point code never filled stay at the origin; mark them
     // invisible so drawSkeleton skips them instead of drawing to (0,0).
     const filled = a[k * 2] !== 0 || a[k * 2 + 1] !== 0 || b[k * 2] !== 0 || b[k * 2 + 1] !== 0;
-    ghost.push({ x: GHOST_CX + vx * GHOST_SCALE, y: GHOST_CY + vy * GHOST_SCALE, visibility: filled ? 1 : 0 });
+    ghost.push({ x: ax + vx * asc, y: ay + vy * asc, visibility: filled ? 1 : 0 });
   }
 
   // Draw with the bone set of the algorithm the code was taught on.

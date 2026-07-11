@@ -131,6 +131,12 @@ codes and their space.
 
 ---
 
+Ghost playback anchors on the live body when one is in frame: because the
+stored seq is normalized to hip-centre/torso-length, it is reprojected using
+the performer's current hip midpoint and torso length so the ghost dances on
+them at their size, falling back to a fixed centre-screen spot when no body is
+detected.
+
 ## Data model
 
 A template (one code):
