@@ -1568,6 +1568,102 @@ clearAllBtn.addEventListener("click", () => {
   }
 });
 
+// ---------- AlgoDance zine viewer ----------
+// The PDF is rendered page by page with pdf.js (loaded on demand from a CDN
+// the first time the tab opens), so reading it feels like flipping a zine:
+// one lit page against a dark room, turned by click, chevron, or arrow key.
+// If pdf.js can't load, the plain embedded-PDF iframe takes over. Nothing
+// downloads until the tab is opened (the PDF is ~24 MB).
+const PDFJS_BASE = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/";
+const zineEl = document.getElementById("zine");
+const zineCanvas = document.getElementById("zineCanvas");
+const zinePrevBtn = document.getElementById("zinePrev");
+const zineNextBtn = document.getElementById("zineNext");
+const zineNum = document.getElementById("zineNum");
+const pdfFallback = document.getElementById("pdfFallback");
+const headerToggle = document.getElementById("headerToggle");
+let zine = null; // {doc, page, seq, task} once opened; {failed:true} on fallback
+
+async function openZine() {
+  if (zine) return;
+  zine = { doc: null, page: 1, seq: 0, task: null };
+  const loading = document.createElement("div");
+  loading.className = "zine-load";
+  loading.textContent = "Loading the zine…";
+  zineEl.appendChild(loading);
+  try {
+    const pdfjs = await import(PDFJS_BASE + "pdf.min.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_BASE + "pdf.worker.min.mjs";
+    zine.doc = await pdfjs.getDocument("AlgoDance.pdf").promise;
+    loading.remove();
+    renderZinePage(1, 0);
+  } catch (e) {
+    console.warn("zine viewer unavailable, embedding the PDF instead:", e);
+    loading.remove();
+    zine = { failed: true };
+    zineEl.hidden = true;
+    pdfFallback.src = "AlgoDance.pdf#toolbar=0&navpanes=0&scrollbar=1&view=FitH";
+    pdfFallback.hidden = false;
+  }
+}
+
+async function renderZinePage(n, dir) {
+  if (!zine?.doc) return;
+  n = Math.max(1, Math.min(zine.doc.numPages, n));
+  zine.page = n;
+  const my = ++zine.seq; // newer requests win; stale renders are dropped
+  const page = await zine.doc.getPage(n);
+  if (my !== zine.seq) return;
+  const boxH = zineEl.clientHeight || 640;
+  const vp1 = page.getViewport({ scale: 1 });
+  const scale = (boxH / vp1.height) * Math.min(2, window.devicePixelRatio || 1);
+  const vp = page.getViewport({ scale });
+  try { zine.task?.cancel(); } catch {}
+  zineCanvas.width = vp.width;
+  zineCanvas.height = vp.height;
+  const task = page.render({ canvasContext: zineCanvas.getContext("2d"), viewport: vp });
+  zine.task = task;
+  try { await task.promise; } catch { return; } // cancelled by a newer flip
+  if (my !== zine.seq) return;
+  zineNum.textContent = `${n} / ${zine.doc.numPages}`;
+  if (dir) {
+    zineCanvas.classList.remove("flip-left", "flip-right");
+    void zineCanvas.offsetWidth; // restart the animation
+    zineCanvas.classList.add(dir > 0 ? "flip-right" : "flip-left");
+  }
+}
+
+function zineFlip(dir) {
+  if (!zine?.doc) return;
+  renderZinePage(zine.page + dir, dir);
+}
+zinePrevBtn.addEventListener("click", () => zineFlip(-1));
+zineNextBtn.addEventListener("click", () => zineFlip(1));
+// Click the page itself: right half flips forward, left half back.
+zineCanvas.addEventListener("click", (e) => {
+  const r = zineCanvas.getBoundingClientRect();
+  zineFlip(e.clientX > r.left + r.width / 2 ? 1 : -1);
+});
+window.addEventListener("keydown", (e) => {
+  if (document.getElementById("pane-algodance").hidden || !zine?.doc) return;
+  if (e.key === "ArrowRight" || e.key === "PageDown") { e.preventDefault(); zineFlip(1); }
+  else if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); zineFlip(-1); }
+});
+// Re-fit the page when the window changes size (debounced).
+let zineResizeTimer = null;
+window.addEventListener("resize", () => {
+  if (document.getElementById("pane-algodance").hidden || !zine?.doc) return;
+  clearTimeout(zineResizeTimer);
+  zineResizeTimer = setTimeout(() => renderZinePage(zine.page, 0), 200);
+});
+
+// Header collapse while reading: the zine wants the whole screen. The
+// floating Menu button toggles the header back for switching tabs.
+headerToggle.addEventListener("click", () => {
+  const collapsed = document.body.classList.toggle("header-collapsed");
+  headerToggle.textContent = collapsed ? "Menu" : "Hide menu";
+});
+
 // ---------- UI wiring ----------
 const tabs = [...document.querySelectorAll(".tab")];
 function activateTab(tab, focus = false) {
@@ -1584,8 +1680,15 @@ function activateTab(tab, focus = false) {
   const contentTab = name === "about" || name === "algodance";
   const layout = document.querySelector(".layout");
   layout.classList.toggle("content-full", contentTab);
-  // AlgoDance is nothing but the PDF, filling the viewport edge to edge.
-  layout.classList.toggle("pdf-full", name === "algodance");
+  // AlgoDance is nothing but the zine, filling the viewport edge to edge:
+  // the header collapses (Menu floats to bring it back) and the viewer loads
+  // on first open.
+  const isZine = name === "algodance";
+  layout.classList.toggle("pdf-full", isZine);
+  document.body.classList.toggle("header-collapsed", isZine);
+  headerToggle.hidden = !isZine;
+  headerToggle.textContent = "Menu";
+  if (isZine) openZine();
   // Leaving the Teach tab mid-recording abandons it, so an active teach can
   // never keep "recording" (REC) into Perform. Also drop any manual capture.
   if (teach && name !== "teach") cancelTeach();

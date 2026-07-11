@@ -415,6 +415,7 @@ input:focus-visible,
   .big-word, .big-status, .bar-fill { transition: none; }
   .video-wrap.riso .grain { animation: none; }
   .video-wrap.riso.flash #video { animation: none; }
+  #zineCanvas.flip-right, #zineCanvas.flip-left { animation: none; }
 }
 
 /* Saved-pose figures: a small riso triptych rendered from the stored skeleton
@@ -448,15 +449,15 @@ input:focus-visible,
   background: #fff;
 }
 
-/* AlgoDance: the document IS the page. Everything but the header collapses and
-   the PDF fills the viewport edge to edge. */
+/* AlgoDance: the document IS the page. The header collapses (the floating
+   Menu button brings it back) and the zine fills the viewport edge to edge. */
 .layout.pdf-full { padding: 0; gap: 0; }
 .layout.pdf-full .panel {
   padding: 0;
   border: none;
   border-radius: 0;
   box-shadow: none;
-  background: #fff;
+  background: #0d0d0f;
   overflow: hidden;
 }
 .pane-pdf { height: 100%; }
@@ -466,8 +467,102 @@ input:focus-visible,
   min-height: calc(100vh - 140px);
   border: none;
   border-radius: 0;
+  background: #fff;
 }
 .layout.pdf-full .topbar { margin-bottom: 12px; }
+
+/* Collapsed header while reading the zine; the floating button restores it. */
+body.header-collapsed .topbar { display: none; }
+.header-toggle {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 60;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(20,8,9,.9);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.header-toggle:hover { border-color: var(--accent-2); }
+.header-toggle[hidden] { display: none; }
+
+/* The zine: one page at a time, lit against a dark room, flipped not scrolled. */
+.zine {
+  position: relative;
+  height: 100%;
+  min-height: calc(100vh - 40px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.zine[hidden] { display: none; }
+#zineCanvas {
+  max-height: 96%;
+  max-width: 96%;
+  height: 96%;
+  width: auto;
+  background: #fff;
+  box-shadow: 0 14px 50px rgba(0,0,0,.65);
+  cursor: pointer;
+}
+#zineCanvas.flip-right {
+  transform-origin: right center;
+  animation: zineFlipR .45s ease-out;
+}
+#zineCanvas.flip-left {
+  transform-origin: left center;
+  animation: zineFlipL .45s ease-out;
+}
+@keyframes zineFlipR {
+  from { transform: perspective(1400px) rotateY(55deg); opacity: .25; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes zineFlipL {
+  from { transform: perspective(1400px) rotateY(-55deg); opacity: .25; }
+  to { transform: none; opacity: 1; }
+}
+.zine-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 52px;
+  height: 76px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(0,0,0,.35);
+  color: #fff;
+  font-size: 40px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .55;
+  transition: opacity .15s, background .15s;
+}
+.zine-nav:hover { opacity: 1; background: rgba(255,0,42,.55); }
+.zine-nav.prev { left: 14px; }
+.zine-nav.next { right: 14px; }
+.zine-num {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: rgba(0,0,0,.5);
+  color: #fff;
+  font-size: 13px;
+  letter-spacing: .5px;
+  pointer-events: none;
+}
+.zine-load {
+  position: absolute;
+  color: #fff;
+  font-size: 14px;
+  opacity: .8;
+}
 a { color: var(--yellow); }
 
 /* Perform: performable-code chips */

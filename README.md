@@ -119,6 +119,10 @@ The URL is remembered in the browser. MoveNet and BlazePose need no setup.
 - **Codes:** play back a whole word or a single example (dance along with the
   ghost skeleton), rename, delete a word or just one of its examples, and
   export/import all codes as JSON.
+- **AlgoDance:** the zine, read full screen one page at a time. Flip with a
+  click, the chevrons, or the arrow keys; the header collapses while reading
+  (the floating Menu button brings it back). Rendered with pdf.js, loaded only
+  when the tab is opened; if that fails, the PDF embeds directly instead.
 
 ### If it says "No clear movement captured"
 
