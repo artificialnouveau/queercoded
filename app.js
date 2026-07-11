@@ -148,17 +148,21 @@ function keyLandmarksVisible(lms) {
   return KEY_LMS.every((i) => (lms[i]?.visibility ?? 0) > 0.35);
 }
 
-// "Resting" = a hand over the face: either wrist held close to the face.
+// "Hand over face" is the teach trigger, and WHICH hand matters: the RIGHT
+// hand starts a recording, the LEFT hand stops and saves it. Splitting the two
+// across hands removes every ambiguity of the old single-gesture design (which
+// countdown am I looking at? did my stop just re-arm a start?).
+//
 // Chosen over hands-on-hips because a close camera framing often crops or
 // barely sees the hips, while the face is always solidly tracked, and it is a
 // distinct pose that a dance movement is unlikely to pass through slowly.
 //
 // The face anchor averages whichever of nose/ears are still visible, with a
 // LOW visibility gate: the covering hand itself occludes the nose, and a
-// strict gate here would make the rest pose undetectable exactly when held.
+// strict gate here would make the pose undetectable exactly when held.
 // Hysteresis (looser exit than enter) stops boundary flicker.
-const REST_ENTER = 0.5;   // wrist-to-face distance (in shoulder widths) to enter rest
-const REST_EXIT = 0.72;   // distance to leave rest once in it
+const REST_ENTER = 0.5;   // wrist-to-face distance (in shoulder widths) to enter
+const REST_EXIT = 0.72;   // distance to leave once on the face
 // Horizontal-centering gate. The pose tracks the WRIST, which sits below the
 // face when the palm covers it, so the radius alone can't tell "palm over face"
 // from "hand beside the face" (both put a wrist within range). A covering hand's
@@ -169,50 +173,58 @@ const CENTER_X_EXIT = 0.55; // and to stay (hysteresis)
 const FACE_LMS = [0, 7, 8]; // nose + ears
 // The trip to and from the face is not part of the gesture. Frames at either
 // end of a capture where a wrist is within this radius of the face are
-// trimmed, so a code spans the movement itself, not the rest-pose transitions.
+// trimmed, so a code spans the movement itself, not the trigger transitions.
 const NEAR_FACE_R = 1.0;
-// Rest only flips state after this many consecutive frames agree, on top of
-// the enter/exit hysteresis. Kills single-frame flicker when the covering
-// hand makes the face landmarks jump.
+// A hand only flips on/off the face after this many consecutive frames agree,
+// on top of the enter/exit hysteresis. Kills single-frame flicker when the
+// covering hand makes the face landmarks jump.
 const REST_DEBOUNCE = 2;
-let wasResting = false;
-let restStreak = 0;
+// Landmark indices are from the SUBJECT's perspective: 15 = their left wrist,
+// 16 = their right wrist. The video is mirrored, so on screen the R label
+// appears on the side where the viewer sees their right hand.
+const handOnFace = {
+  left: { on: false, streak: 0 },
+  right: { on: false, streak: 0 },
+};
 let restInfo = null;      // per-frame info for drawing the face target circle
 
-function isResting(lms) {
-  const lw = lms[15], rw = lms[16], ls = lms[11], rs = lms[12];
+function updateHandsOnFace(lms) {
+  const ls = lms[11], rs = lms[12];
   restInfo = null;
   const face = FACE_LMS.map((i) => lms[i]).filter((p) => (p?.visibility ?? 0) > 0.2);
   if (face.length === 0 || (ls?.visibility ?? 0) < 0.35 || (rs?.visibility ?? 0) < 0.35) {
-    wasResting = false;
-    return false;
+    handOnFace.left.on = handOnFace.right.on = false;
+    handOnFace.left.streak = handOnFace.right.streak = 0;
+    return { left: false, right: false };
   }
   const anchor = {
     x: face.reduce((s, p) => s + p.x, 0) / face.length,
     y: face.reduce((s, p) => s + p.y, 0) / face.length,
   };
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
-  const rThr = wasResting ? REST_EXIT : REST_ENTER;
-  const xThr = wasResting ? CENTER_X_EXIT : CENTER_X_ENTER;
   // A wrist counts as "on the face" only when it is both close enough AND
-  // roughly under the face centre horizontally.
-  const onFace = (w) => {
-    if ((w?.visibility ?? 0) <= 0.2) return { on: false, d: Infinity };
-    const d = Math.hypot(w.x - anchor.x, w.y - anchor.y) / scale;
-    const dx = Math.abs(w.x - anchor.x) / scale;
-    return { on: d < rThr && dx < xThr, d };
+  // roughly under the face centre horizontally. Debounced per hand.
+  const check = (w, st) => {
+    const rThr = st.on ? REST_EXIT : REST_ENTER;
+    const xThr = st.on ? CENTER_X_EXIT : CENTER_X_ENTER;
+    let inRange = false, d = Infinity;
+    if ((w?.visibility ?? 0) > 0.2) {
+      d = Math.hypot(w.x - anchor.x, w.y - anchor.y) / scale;
+      const dx = Math.abs(w.x - anchor.x) / scale;
+      inRange = d < rThr && dx < xThr;
+    }
+    if (inRange !== st.on) {
+      st.streak++;
+      if (st.streak >= REST_DEBOUNCE) { st.on = inRange; st.streak = 0; }
+    } else {
+      st.streak = 0;
+    }
+    return d;
   };
-  const L = onFace(lw), R = onFace(rw);
-  const d = Math.min(L.d, R.d);
-  const inRange = L.on || R.on;
-  if (inRange !== wasResting) {
-    restStreak++;
-    if (restStreak >= REST_DEBOUNCE) { wasResting = inRange; restStreak = 0; }
-  } else {
-    restStreak = 0;
-  }
-  restInfo = { anchor, scale, d, on: inRange };
-  return wasResting;
+  const dL = check(lms[15], handOnFace.left);
+  const dR = check(lms[16], handOnFace.right);
+  restInfo = { anchor, scale, d: Math.min(dL, dR), on: handOnFace.left.on || handOnFace.right.on };
+  return { left: handOnFace.left.on, right: handOnFace.right.on };
 }
 
 // True while a wrist is anywhere near the face: wider than the rest radius so
@@ -238,6 +250,33 @@ function drawRestTargets() {
     octx.fillStyle = "rgba(236,255,0,0.15)";
     octx.fill();
   }
+}
+
+// Big R / L letters on the wrists during a teach: RIGHT hand starts the
+// recording, LEFT hand stops it. The hand whose turn it is glows yellow.
+// The overlay canvas is CSS-mirrored, so text must be drawn locally flipped
+// (scale(-1,1)) or the letters would read backwards.
+function drawHandLabel(w, letter, active) {
+  if (!w || (w.visibility ?? 0) < 0.3) return;
+  const x = w.x * overlay.width;
+  const y = w.y * overlay.height - 12;
+  octx.save();
+  octx.translate(x, y);
+  octx.scale(-1, 1); // cancel the CSS mirror so the letter reads correctly
+  octx.font = `900 ${active ? 52 : 34}px system-ui, sans-serif`;
+  octx.textAlign = "center";
+  octx.textBaseline = "bottom";
+  octx.lineWidth = active ? 8 : 5;
+  octx.strokeStyle = "rgba(0,0,0,0.7)";
+  octx.strokeText(letter, 0, 0);
+  octx.fillStyle = active ? "#ECFF00" : "rgba(255,255,255,0.85)";
+  octx.fillText(letter, 0, 0);
+  octx.restore();
+}
+function drawHandLabels(lms) {
+  const capturing = teach.state === "capturing";
+  drawHandLabel(lms[16], "R", !capturing); // subject's right hand: start
+  drawHandLabel(lms[15], "L", capturing);  // subject's left hand: stop and save
 }
 
 // Mean per-landmark euclidean distance between two normalized pose vectors.
@@ -559,18 +598,19 @@ async function runFrame() {
           const shx = (ls.x + rs.x) / 2, shy = (ls.y + rs.y) / 2;
           liveFrame = { cx, cy, torso: Math.hypot(shx - cx, shy - cy) || 1e-6, at: now };
         }
-        restNow = isResting(lms);
+        const hands = updateHandsOnFace(lms);
+        restNow = hands.left || hands.right;
         const nearNow = isNearFace();
         if (teach) {
-          teachStep(vec, restNow, nearNow, now);
+          teachStep(vec, hands, nearNow, now);
         } else if (triggerMode === "manual") {
           if (manualCapturing) manualFrames.push(vec);
         } else {
           // Perform is continuous but fires only when a whole move completes.
           performStep(vec, now);
         }
-        // Face target circle belongs to Teach's cover-to-record bracket only.
-        if (teach && !teach.manual && !playback) drawRestTargets();
+        // Face target circle + R/L hand labels belong to Teach only.
+        if (teach && !teach.manual && !playback) { drawRestTargets(); drawHandLabels(lms); }
       }
 
       // Keep the matched word floating just above the head. The video is
@@ -581,6 +621,21 @@ async function runFrame() {
         bigWord.style.left = ((1 - nose.x) * 100).toFixed(1) + "%";
         bigWord.style.top = (topY * 100).toFixed(1) + "%";
       }
+    }
+
+    // The countdown timers only advance on frames where the body is tracked.
+    // Without this, losing tracking mid-hold let the DISPLAYED countdown reach
+    // zero while the state machine (which only runs on tracked frames) never
+    // started the capture, so the first countdown appeared to do nothing.
+    if (teach) {
+      const dt = teach.lastTickAt ? now - teach.lastTickAt : 0;
+      if (!bodyVisible && dt > 0) {
+        if (teach.holdSince) teach.holdSince += dt;
+        if (teach.stopSince) teach.stopSince += dt;
+        if (teach.lastOn) teach.lastOn += dt;
+        if (teach.stopLastOn) teach.stopLastOn += dt;
+      }
+      teach.lastTickAt = now;
     }
 
     // The teach overlay is driven here, EVERY frame, not inside the
@@ -645,6 +700,31 @@ function speedNow(now) {
   return 0;
 }
 
+// Motion energy of a sequence: mean frame-to-frame pose change. A neutral
+// stance has near-zero energy; a dance move has plenty. Codes usually START
+// and END in a neutral pose, so DTW alone can warp a static resting body onto
+// a code's neutral endpoints cheaply and false-fire while someone just stands
+// there. Requiring the live segment's energy to be comparable to the code's
+// (ENERGY_RATIO_MIN) makes stillness unmatchable against real movement.
+function seqEnergy(seq) {
+  if (seq.length < 2) return 0;
+  let s = 0;
+  for (let i = 1; i < seq.length; i++) s += poseDist(seq[i - 1], seq[i]);
+  return s / (seq.length - 1);
+}
+const ENERGY_RATIO_MIN = 0.35; // live vs code energy: min(a,b)/max(a,b) must exceed this
+const tmplEnergy = new Map();  // cached per template id (never persisted)
+function energyOf(t) {
+  let e = tmplEnergy.get(t.id);
+  if (e == null) { e = seqEnergy(t.seq); tmplEnergy.set(t.id, e); }
+  return e;
+}
+function energyCompatible(eLive, t) {
+  const eT = energyOf(t);
+  const hi = Math.max(eLive, eT), lo = Math.min(eLive, eT);
+  return hi < 1e-6 || lo / hi >= ENERGY_RATIO_MIN;
+}
+
 // Best distance per word for a candidate segment (current algorithm family).
 function scoreSegment(frames) {
   const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
@@ -654,12 +734,15 @@ function scoreSegment(frames) {
   }
   if (frames.length < MIN_SEG_FRAMES) return null;
   const live = resampleSeq(frames, FIXED_LEN);
+  const eLive = seqEnergy(live);
   const perWord = new Map();
   for (const t of pool) {
+    if (!energyCompatible(eLive, t)) continue; // stillness can't match movement
     const d = dtw(live, t.seq);
     const k = t.word.toLowerCase();
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
   }
+  if (perWord.size === 0) return null;
   return [...perWord.values()].sort((a, b) => a.dist - b.dist);
 }
 
@@ -703,7 +786,7 @@ function performStep(vec, now) {
     barEl.style.width = "0%"; hideClosest(); return;
   }
   const ranked = scoreSegment(seg);
-  if (!ranked) return;
+  if (!ranked) { barEl.style.width = "0%"; hideClosest(); return; }
   const { best, second, thresh } = showScore(ranked);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
   if (best.dist < thresh && !ambiguous) {
@@ -766,12 +849,20 @@ function matchAndFire(frames, now) {
     return;
   }
   const live = resampleSeq(frames, FIXED_LEN);
+  const eLive = seqEnergy(live);
   // Best (smallest) distance per distinct word.
   const perWord = new Map();
   for (const t of pool) {
+    if (!energyCompatible(eLive, t)) continue; // stillness can't match movement
     const k = t.word.toLowerCase();
     const d = dtw(live, t.seq);
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
+  }
+  if (perWord.size === 0) {
+    bestWordEl.textContent = "—";
+    matchPctEl.textContent = "—";
+    barEl.style.width = "0%";
+    return;
   }
   const ranked = [...perWord.values()].sort((a, b) => a.dist - b.dist);
   const best = ranked[0], second = ranked[1];
@@ -803,24 +894,38 @@ function setPerformState() {
 function fireWord(word, now) {
   lastFireAt = now;
   lastFiredWord = word;
-  showBigWord(word);
-  flashRiso(now);
-  ping();
-  speak(word);
+  // Reveal word, ping and riso flash together, timed to when the speech
+  // engine actually starts talking, so eye and ear get the word at once.
+  const reveal = () => {
+    showBigWord(word);
+    flashRiso(performance.now());
+    ping();
+  };
+  if (!speak(word, reveal)) reveal(); // speech off or unavailable: show now
   phrase.push(word);
   renderPhrase();
 }
 
 // Speak text aloud with the Web Speech API. Cancels any in-progress speech so
-// rapid matches stay snappy rather than queueing up.
-function speak(text) {
-  if (!speakOn || !("speechSynthesis" in window) || !text) return;
+// rapid matches stay snappy rather than queueing up. `onStart` fires when the
+// engine audibly begins (its startup lag is easily 100-500ms), with a fallback
+// timer in case the engine never reports starting. Returns false when speech
+// is off or unsupported so the caller can act immediately instead.
+function speak(text, onStart) {
+  if (!speakOn || !("speechSynthesis" in window) || !text) return false;
   try {
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1; u.pitch = 1;
+    if (onStart) {
+      let done = false;
+      const go = () => { if (!done) { done = true; onStart(); } };
+      u.onstart = go;
+      setTimeout(go, 600); // engine hung or silent: don't hold the visual hostage
+    }
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
-  } catch {}
+    return true;
+  } catch { return false; }
 }
 
 // Short confirmation tone on a successful match.
@@ -943,41 +1048,48 @@ function startTeach() {
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
   } else {
     recordBtn.textContent = "Cancel";
-    setTeachMsg("Cover your face with one hand and hold for the 3-second countdown to start. Perform, then cover your face and hold again to stop and save.", "");
+    setTeachMsg("Cover your face with your RIGHT hand (the big R) and hold for the 3-2-1 countdown to start. Perform, then cover your face with your LEFT hand (the big L) to stop and save.", "");
   }
 }
 
-// One frame of a teaching capture. Mirrors Perform: hold face+hand for the
-// 3-second countdown to start, dance, then hold face+hand again to finish.
-// After the Record click: cover the face and hold for the start countdown to
-// begin, perform, then cover the face and hold for the stop countdown to save.
-// `canStop` requires the hand to have left the face once, so it can't stop
-// instantly right after starting.
-function teachStep(vec, rest, near, now) {
+// A hand may drop off the face for up to this long mid-hold (tracking flicker,
+// slight slip) without resetting the countdown. Longer gaps cancel it.
+const HOLD_GRACE_MS = 350;
+
+// One frame of a teaching capture. RIGHT hand over the face held for the 3-2-1
+// countdown STARTS recording; LEFT hand over the face held for the countdown
+// STOPS and saves. Different hands for start and stop, so a stop can never
+// re-arm a start and there is no ambiguity about which countdown is which.
+// `canStop` requires the left hand to have been off the face once, so covering
+// with both hands at the start can't stop the capture instantly.
+function teachStep(vec, hands, near, now) {
   const t = teach;
   if (t.manual) { t.frames.push(vec); t.near.push(near); return; }
-  if (t.state === "prime") {          // waiting for a fresh face cover
-    if (!rest) t.armed = true;        // hand must leave the face first...
-    if (t.armed && rest) { t.state = "starting"; t.holdSince = now; } // ...then cover
+  if (t.state === "prime") {          // waiting for a fresh right-hand cover
+    if (!hands.right) t.armed = true; // right hand must be off the face first...
+    if (t.armed && hands.right) { t.state = "starting"; t.holdSince = now; t.lastOn = now; } // ...then cover
     return;
   }
-  if (t.state === "starting") {       // start countdown; uncovering cancels it
-    if (!rest) { t.state = "prime"; return; }
+  if (t.state === "starting") {       // start countdown; leaving the face cancels it
+    if (hands.right) t.lastOn = now;
+    else if (now - t.lastOn > HOLD_GRACE_MS) { t.state = "prime"; return; }
     if (now - t.holdSince >= START_HOLD_MS) {
       t.state = "capturing";
       t.frames = [vec]; t.near = [near]; t.startedAt = now;
-      t.canStop = false; t.stopSince = 0;
+      t.canStop = false; t.stopSince = 0; t.stopLastOn = 0;
     }
     return;
   }
-  // capturing
+  // capturing: stop with the LEFT hand
   t.frames.push(vec);
   t.near.push(near);
-  if (!rest) t.canStop = true;
-  if (t.canStop && rest) {
+  if (!hands.left) t.canStop = true;
+  if (!t.canStop) return;
+  if (hands.left) {
     if (!t.stopSince) t.stopSince = now;
+    t.stopLastOn = now;
     if (now - t.stopSince >= STOP_HOLD_MS) finishTeach(now, false);
-  } else {
+  } else if (t.stopSince && now - t.stopLastOn > HOLD_GRACE_MS) {
     t.stopSince = 0;
   }
 }
@@ -998,18 +1110,18 @@ function updateTeachUI(bodyVisible, rest) {
   if (t.manual || t.state === "starting" || t.state === "capturing") {
     countdownEl.hidden = true;
     if (t.manual) statusEl.textContent = "Recording. Click Stop & save when done.";
-    else if (t.state === "capturing" && !t.stopSince) statusEl.textContent = "Recording. Cover your face and hold to stop and save.";
+    else if (t.state === "capturing" && !t.stopSince) statusEl.textContent = "Recording. Cover your face with your LEFT hand (L) and hold to stop and save.";
     return;
   }
-  // prime: waiting for a fresh face cover
+  // prime: waiting for a fresh right-hand cover
   countdownEl.hidden = false;
   countdownEl.classList.remove("rec");
   if (!t.armed) {
     countdownEl.textContent = "…";
-    statusEl.textContent = "Lower your hand first, then cover your face to start the countdown.";
+    statusEl.textContent = "Lower your right hand first, then cover your face with it to start the countdown.";
   } else {
     countdownEl.textContent = "COVER";
-    statusEl.textContent = "Cover your face with one hand and hold to start the countdown.";
+    statusEl.textContent = "Cover your face with your RIGHT hand (R) and hold to start the countdown.";
   }
 }
 
@@ -1373,7 +1485,10 @@ function activateTab(tab, focus = false) {
   // About / AlgoDance are reading pages: hide the video stage and let the panel
   // fill the width.
   const contentTab = name === "about" || name === "algodance";
-  document.querySelector(".layout").classList.toggle("content-full", contentTab);
+  const layout = document.querySelector(".layout");
+  layout.classList.toggle("content-full", contentTab);
+  // AlgoDance is nothing but the PDF, filling the viewport edge to edge.
+  layout.classList.toggle("pdf-full", name === "algodance");
   // Leaving the Teach tab mid-recording abandons it, so an active teach can
   // never keep "recording" (REC) into Perform. Also drop any manual capture.
   if (teach && name !== "teach") cancelTeach();
@@ -1458,6 +1573,9 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 });
 
 (async function boot() {
+  // Pre-warm the speech engine: the voice list loads lazily, and asking for it
+  // up front shaves the extra-long delay off the FIRST spoken match.
+  if ("speechSynthesis" in window) speechSynthesis.getVoices();
   threshVal.textContent = threshInput.value;
   modelSel.value = algoChoice;
   renderCodeList();

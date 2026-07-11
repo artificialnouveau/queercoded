@@ -405,18 +405,6 @@ select {
 .fam-blaze { background: rgba(123,92,255,.22); color: #c9bcff; }
 .fam-movenet { background: rgba(52,211,153,.20); color: #7ff0c6; }
 .fam-yolo { background: rgba(255,195,113,.20); color: #ffd39a; }
-.model-note {
-  display: block;
-  margin: 8px 0 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #fff;
-  background: rgba(28,15,16,.96);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px 12px;
-  box-shadow: 0 8px 28px rgba(0,0,0,.4);
-}
 
 /* Keyboard focus: a clear ring on interactive elements (mouse clicks don't
    trigger :focus-visible, so this only shows for keyboard users). */
@@ -460,7 +448,6 @@ input:focus-visible,
 .about-list b { color: var(--text); }
 .tabpane h3 { margin: 16px 0 4px; font-size: 15px; }
 
-.pdf-actions { display: flex; gap: 8px; margin: 8px 0 10px; }
 .pdf-frame {
   width: 100%;
   height: 70vh;
@@ -469,6 +456,27 @@ input:focus-visible,
   border-radius: 10px;
   background: #fff;
 }
+
+/* AlgoDance: the document IS the page. Everything but the header collapses and
+   the PDF fills the viewport edge to edge. */
+.layout.pdf-full { padding: 0; gap: 0; }
+.layout.pdf-full .panel {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: #fff;
+  overflow: hidden;
+}
+.pane-pdf { height: 100%; }
+.layout.pdf-full .pdf-frame {
+  display: block;
+  height: 100%;
+  min-height: calc(100vh - 140px);
+  border: none;
+  border-radius: 0;
+}
+.layout.pdf-full .topbar { margin-bottom: 12px; }
 a { color: var(--yellow); }
 
 /* Perform: performable-code chips */
@@ -522,4 +530,3 @@ a { color: var(--yellow); }
 /* Reading pages (About / AlgoDance): hide the video stage, panel fills width. */
 .layout.content-full { grid-template-columns: 1fr; }
 .layout.content-full .stage { display: none; }
-.layout.content-full .pdf-frame { height: 82vh; }

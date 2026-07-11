@@ -37,8 +37,9 @@ no build step. `app.js` does all the work:
    length, so a code works whether you are near or far from the camera.
 
 3. **Teach vs Perform.** Teaching a code is a deliberate recording: cover your
-   face with one hand and hold it for a 3-second countdown to start, perform
-   the movement, then cover your face and hold again to stop. The hand-to-face
+   face with your RIGHT hand (a big R marks it) and hold for a 3-second
+   countdown to start, perform the movement, then cover your face with your
+   LEFT hand (a big L) and hold to stop and save. The hand-to-face
    moments are trimmed so a code spans only the movement itself. Performing, by
    contrast, is continuous: the app keeps a rolling buffer of your recent poses
    and, several times a second, matches it against your saved codes. When a
@@ -105,9 +106,9 @@ The URL is remembered in the browser. MoveNet and BlazePose need no setup.
 
 ## Use
 
-- **Teach:** name a word, click Record, cover your face with one hand, move
-  it away and perform your movement, then cover your face again. It saves by
-  itself.
+- **Teach:** name a word, click Record, cover your face with your right hand
+  to start, perform your movement, then cover your face with your left hand.
+  It saves by itself.
 - **Perform:** just perform. The app watches continuously and, when your
   movement matches a saved code, the word appears above your head, is spoken
   aloud, and joins the phrase strip. Speak the whole phrase, undo the last
