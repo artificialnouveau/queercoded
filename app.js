@@ -279,11 +279,25 @@ function drawHandLabels(lms) {
   drawHandLabel(lms[15], "L", capturing);  // subject's left hand: stop and save
 }
 
-// Mean per-landmark euclidean distance between two normalized pose vectors.
+// Per-landmark weights for matching. All 33 points equally weighted let the
+// face and torso (which barely move) dilute the wrists and ankles (which carry
+// the dance), so expressive extremities count ~3x, mid-limbs 1.5x, torso 1x,
+// and the near-rigid face is mostly ignored. Indices are BlazePose slots; the
+// COCO-17 mapping fills 0, 2, 5, 7, 8, 11-16, 23-28, so its slots are covered.
+const LM_WEIGHT = new Array(NUM_LMS).fill(1);
+for (let i = 0; i <= 10; i++) LM_WEIGHT[i] = 0.3;             // face
+for (const i of [13, 14, 25, 26]) LM_WEIGHT[i] = 1.5;         // elbows, knees
+for (const i of [15, 16, 17, 18, 19, 20, 21, 22]) LM_WEIGHT[i] = 3; // wrists, hands
+for (const i of [27, 28, 29, 30, 31, 32]) LM_WEIGHT[i] = 3;   // ankles, feet
+const LM_WEIGHT_SUM = LM_WEIGHT.reduce((s, w) => s + w, 0);
+
+// Weighted mean per-landmark euclidean distance between two normalized poses.
 function poseDist(a, b) {
   let s = 0;
-  for (let i = 0; i < a.length; i += 2) s += Math.hypot(a[i] - b[i], a[i + 1] - b[i + 1]);
-  return s / (a.length / 2);
+  for (let i = 0; i * 2 < a.length; i++) {
+    s += LM_WEIGHT[i] * Math.hypot(a[i * 2] - b[i * 2], a[i * 2 + 1] - b[i * 2 + 1]);
+  }
+  return s / LM_WEIGHT_SUM;
 }
 
 // Resample a sequence of pose vectors to exactly L frames (linear interp).
