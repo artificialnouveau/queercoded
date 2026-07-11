@@ -772,8 +772,16 @@ async function runFrame() {
         // Hands carry most of a dance and most of the noise: an untracked
         // wrist gets a guessed position that pollutes captures and matches.
         // Teach only RECORDS frames, and Perform only matches, while at
-        // least one wrist is confidently seen.
-        const handVis = (lms[15]?.visibility ?? 0) > 0.35 || (lms[16]?.visibility ?? 0) > 0.35;
+        // least one wrist is USABLE: confidently seen, or estimated above the
+        // shoulder line with its elbow tracked. Arms-up moves (YMCA and
+        // friends) push the wrists out the top of the frame, and those
+        // estimates are directionally sound, unlike hands-at-the-sides
+        // guesses, which stay excluded.
+        const shoulderMidY = ((lms[11]?.y ?? 0) + (lms[12]?.y ?? 0)) / 2;
+        const wristUsable = (w, e) =>
+          (w?.visibility ?? 0) > 0.35 ||
+          ((e?.visibility ?? 0) > 0.35 && !!w && w.y < shoulderMidY);
+        const handVis = wristUsable(lms[15], lms[13]) || wristUsable(lms[16], lms[14]);
         if (teach) {
           teachStep(vec, hands, nearNow, now, handVis);
         } else if (currentTab === "perform") {
@@ -1006,50 +1014,42 @@ function showScore(ranked) {
   return { best, second, thresh };
 }
 
-// ---------- Static-pose matching ----------
-// Striking and HOLDING a pose also counts: after HOLD_MS of stillness in a
-// clearly non-neutral pose, the held pose is compared directly against each
-// code's PEAK pose (its farthest frame from its own start, i.e. the shape of
-// the move). One fire per hold; shifting to a new pose re-arms it. Neutral
-// standing can't fire: the held pose must differ clearly from the learned
-// resting stance.
-const HOLD_MS = 600;
+// ---------- Static-pose matching (the PRIMARY path) ----------
+// Most codes are struck poses, not trajectories, so pose recognition leads:
+// hold a clearly non-neutral pose for HOLD_MS and it is compared against
+// EVERY frame of every code (the closest frame counts), which forgives how
+// you got into the pose entirely. Runs continuously, even while the motion
+// segmenter thinks the body is "moving", because stillness is tracked here
+// by pose drift, not by the segmenter. One fire per hold; shifting to a new
+// pose re-arms it. Neutral standing and hand-on-face can't fire.
+const HOLD_MS = 450;
 const HOLD_SHIFT = 0.09;     // pose change (weighted) that counts as a NEW hold
 let stillSince = 0;
 let holdFired = false;
 let holdRefVec = null;
-const tmplPeak = new Map();
-function peakOf(t) {
-  let p = tmplPeak.get(t.id);
-  if (!p) {
-    let m = -1;
-    for (const f of t.seq) {
-      const d = poseDist(f, t.seq[0]);
-      if (d > m) { m = d; p = f; }
-    }
-    tmplPeak.set(t.id, p);
+function holdDistToCode(vec, t) {
+  let m = Infinity;
+  for (const f of t.seq) {
+    const d = poseDist(vec, f);
+    if (d < m) m = d;
   }
-  return p;
+  return m;
 }
 function holdStep(vec, now, face) {
-  if (face) { stillSince = 0; holdFired = false; return; }
+  if (face) { stillSince = now; holdFired = false; return; }
   if (!holdRefVec || poseDist(vec, holdRefVec) > HOLD_SHIFT) {
     holdRefVec = vec.slice(); // pose changed: a fresh hold begins
     stillSince = now;
     holdFired = false;
   }
-  if (holdFired || now - stillSince < HOLD_MS) return;
+  if (holdFired || !stillSince || now - stillSince < HOLD_MS) return false;
   // Neutral standing is not a pose.
-  if (!restPose || poseDist(vec, restPose) < REST_DEV_MIN) {
-    barEl.style.width = "0%";
-    hideClosest();
-    return;
-  }
+  if (!restPose || poseDist(vec, restPose) < REST_DEV_MIN) return false;
   const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
-  if (pool.length === 0) return;
+  if (pool.length === 0) return false;
   const perWord = new Map();
   for (const t of pool) {
-    const d = poseDist(vec, peakOf(t));
+    const d = holdDistToCode(vec, t);
     const k = t.word.toLowerCase();
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
   }
@@ -1060,8 +1060,11 @@ function holdStep(vec, now, face) {
   bestWordEl.textContent = best.word;
   matchPctEl.textContent = Math.round(pct) + "%";
   barEl.style.width = pct + "%";
+  if (pct >= 25) showClosest(best.word, pct);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
-  if (best.dist < thresh * FIRE_MARGIN && !ambiguous) {
+  // Deliberately held poses fire at the full threshold (no extra margin):
+  // holding still IS the confirmation.
+  if (best.dist < thresh && !ambiguous) {
     const ok = now - lastFireAt > FIRE_GAP_MS
       && (best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS);
     if (ok) {
@@ -1070,6 +1073,7 @@ function holdStep(vec, now, face) {
       fireWord(best.word, now);
     }
   }
+  return true;
 }
 
 // One Perform frame: track motion, show live feedback, and fire ONLY when a
@@ -1079,13 +1083,17 @@ function performStep(vec, now, face) {
   const sp = speedNow(now);
   learnRestPose(vec, sp);
 
+  // Pose-first: the hold matcher runs EVERY frame, tracking stillness by
+  // pose drift rather than the motion segmenter, so a struck-and-held pose
+  // is recognized even when limb jitter keeps the segmenter in "moving".
+  const holding = holdStep(vec, now, face);
+
   if (!moving) {
     if (sp > MOVE_START) {
       moving = true; moveStart = now - SPEED_WIN_MS; lastActive = now;
-      stillSince = 0; holdFired = false;
-    } else {
-      // Static-pose matching: striking and HOLDING a pose counts too.
-      holdStep(vec, now, face);
+    } else if (!holding) {
+      barEl.style.width = "0%";
+      hideClosest();
     }
     return;
   }
@@ -1100,10 +1108,10 @@ function performStep(vec, now, face) {
     && !face
     && travelOf(soFar) >= MIN_ACTIVE_TRAVEL
     && (!restPose || maxDevFrom(soFar, restPose) >= REST_DEV_MIN);
-  if (looksReal) {
+  if (looksReal && !holding) {
     const inProgress = scoreSegment(soFar);
     if (inProgress) showScore(inProgress);
-  } else {
+  } else if (!holding) {
     barEl.style.width = "0%";
     hideClosest();
   }
@@ -2236,7 +2244,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v17 (2026-07-11)");
+  console.log("Queercoded build v18 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
