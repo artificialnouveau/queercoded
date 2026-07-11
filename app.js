@@ -183,12 +183,17 @@ const REST_DEBOUNCE = 2;
 // 16 = their right wrist. The video is mirrored, so on screen the R label
 // appears on the side where the viewer sees their right hand.
 const handOnFace = {
-  left: { on: false, streak: 0 },
-  right: { on: false, streak: 0 },
+  left: { on: false, streak: 0, unseenSince: 0 },
+  right: { on: false, streak: 0, unseenSince: 0 },
 };
+// A covering palm often occludes its own wrist, so the wrist landmark drops
+// out exactly while the hand IS on the face. A wrist that goes unseen while
+// on the face is treated as still there for this long, so a hold does not
+// break just because the hand did its job of covering.
+const UNSEEN_STICKY_MS = 600;
 let restInfo = null;      // per-frame info for drawing the face target circle
 
-function updateHandsOnFace(lms) {
+function updateHandsOnFace(lms, now) {
   const ls = lms[11], rs = lms[12];
   restInfo = null;
   const face = FACE_LMS.map((i) => lms[i]).filter((p) => (p?.visibility ?? 0) > 0.2);
@@ -203,15 +208,21 @@ function updateHandsOnFace(lms) {
   };
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
   // A wrist counts as "on the face" only when it is both close enough AND
-  // roughly under the face centre horizontally. Debounced per hand.
+  // roughly under the face centre horizontally. Debounced per hand, and an
+  // unseen wrist stays briefly "on" (leaving the face requires being SEEN
+  // away from it, not just disappearing behind it).
   const check = (w, st) => {
     const rThr = st.on ? REST_EXIT : REST_ENTER;
     const xThr = st.on ? CENTER_X_EXIT : CENTER_X_ENTER;
     let inRange = false, d = Infinity;
     if ((w?.visibility ?? 0) > 0.2) {
+      st.unseenSince = 0;
       d = Math.hypot(w.x - anchor.x, w.y - anchor.y) / scale;
       const dx = Math.abs(w.x - anchor.x) / scale;
       inRange = d < rThr && dx < xThr;
+    } else if (st.on) {
+      if (!st.unseenSince) st.unseenSince = now;
+      inRange = now - st.unseenSince < UNSEEN_STICKY_MS;
     }
     if (inRange !== st.on) {
       st.streak++;
@@ -612,7 +623,7 @@ async function runFrame() {
           const shx = (ls.x + rs.x) / 2, shy = (ls.y + rs.y) / 2;
           liveFrame = { cx, cy, torso: Math.hypot(shx - cx, shy - cy) || 1e-6, at: now };
         }
-        const hands = updateHandsOnFace(lms);
+        const hands = updateHandsOnFace(lms, now);
         restNow = hands.left || hands.right;
         const nearNow = isNearFace();
         if (teach) {
@@ -1090,16 +1101,22 @@ function teachStep(vec, hands, near, now) {
     if (now - t.holdSince >= START_HOLD_MS) {
       t.state = "capturing";
       t.frames = [vec]; t.near = [near]; t.startedAt = now;
-      t.canStop = false; t.stopSince = 0; t.stopLastOn = 0;
+      t.canStopL = false; t.canStopR = false; t.stopSince = 0; t.stopLastOn = 0;
     }
     return;
   }
-  // capturing: stop with the LEFT hand
+  // capturing: cover the face to stop. The LEFT hand is the cue (the big L),
+  // but either hand completes the stop once IT has been off the face since the
+  // capture began: with a palm on the face the model sometimes swaps which
+  // wrist is which, and trusting only "left" made real stop holds break and
+  // fall back to REC mid-countdown. The per-hand off-the-face requirement
+  // still keeps the starting right hand from stopping the capture instantly.
   t.frames.push(vec);
   t.near.push(near);
-  if (!hands.left) t.canStop = true;
-  if (!t.canStop) return;
-  if (hands.left) {
+  if (!hands.left) t.canStopL = true;
+  if (!hands.right) t.canStopR = true;
+  const stopHeld = (t.canStopL && hands.left) || (t.canStopR && hands.right);
+  if (stopHeld) {
     if (!t.stopSince) t.stopSince = now;
     t.stopLastOn = now;
     if (now - t.stopSince >= STOP_HOLD_MS) finishTeach(now, false);
