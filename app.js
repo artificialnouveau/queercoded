@@ -300,9 +300,9 @@ function newId() { return "c_" + Math.random().toString(36).slice(2, 9) + perfor
 // accurate but can drop the frame rate on slower machines.
 const MODEL_BASE = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/";
 const MODELS = {
-  lite:  { label: "Lite",  url: MODEL_BASE + "pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
-  full:  { label: "Full",  url: MODEL_BASE + "pose_landmarker_full/float16/1/pose_landmarker_full.task" },
-  heavy: { label: "Heavy", url: MODEL_BASE + "pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task" },
+  lite:  { label: "MediaPipe Pose Landmarker Lite",  url: MODEL_BASE + "pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+  full:  { label: "MediaPipe Pose Landmarker Full",  url: MODEL_BASE + "pose_landmarker_full/float16/1/pose_landmarker_full.task" },
+  heavy: { label: "MediaPipe Pose Landmarker Heavy", url: MODEL_BASE + "pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task" },
 };
 const MODEL_STORE_KEY = "queercoded.model.v1";
 let modelChoice = localStorage.getItem(MODEL_STORE_KEY);
