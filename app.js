@@ -721,16 +721,31 @@ async function runFrame() {
         }
         const hands = updateHandsOnFace(lms, now);
         const nearNow = isNearFace();
+        // Hands carry most of a dance and most of the noise: an untracked
+        // wrist gets a guessed position that pollutes captures and matches.
+        // Teach only RECORDS frames, and Perform only matches, while at
+        // least one wrist is confidently seen.
+        const handVis = (lms[15]?.visibility ?? 0) > 0.35 || (lms[16]?.visibility ?? 0) > 0.35;
         if (teach) {
-          teachStep(vec, hands, nearNow, now);
+          teachStep(vec, hands, nearNow, now, handVis);
         } else if (currentTab === "perform") {
           // Recognition belongs to the Perform tab only: on Teach or Codes an
           // idle body must never fire (or even score) matches.
           if (triggerMode === "manual") {
-            if (manualCapturing) manualFrames.push(vec);
-          } else {
+            if (manualCapturing && handVis) manualFrames.push(vec);
+          } else if (handVis) {
             // Perform is continuous but fires only when a whole move completes.
             performStep(vec, now, hands.left || hands.right);
+            if (perfHandsLost) { perfHandsLost = false; setPerformState(); }
+          } else {
+            moving = false;      // a half-tracked move is not evidence
+            stillSince = 0;
+            if (!perfHandsLost) {
+              perfHandsLost = true;
+              barEl.style.width = "0%";
+              hideClosest();
+            }
+            statusEl.textContent = "Can't see your hands. Keep at least one hand in view; matching is paused.";
           }
         }
         // Face target circle + R/L hand labels belong to Teach only.
@@ -804,6 +819,7 @@ const MIN_MOVE_MS = 350;
 const MAX_MOVE_MS = 7000;
 const perfBuf = [];               // {vec, t}
 let moving = false, moveStart = 0, lastActive = 0;
+let perfHandsLost = false;        // matching paused because no wrist is tracked
 
 // The performer's neutral stance, learned as a slow average of the pose
 // whenever the body is still. Codes start and end near neutral, so a segment
@@ -1395,9 +1411,16 @@ const HOLD_GRACE_MS = 350;
 // re-arm a start and there is no ambiguity about which countdown is which.
 // A hand can only stop the capture after IT has been off the face once, so the
 // starting hand still resting there can't stop the capture instantly.
-function teachStep(vec, hands, near, now) {
+// Frames are only RECORDED while at least one wrist is confidently tracked
+// (handVis); the trigger state machine keeps running regardless, so the
+// countdowns stay honest while a briefly untracked hand cannot write guessed
+// wrist positions into the saved code.
+function teachStep(vec, hands, near, now, handVis) {
   const t = teach;
-  if (t.manual) { t.frames.push(vec); t.near.push(near); t.onface.push(hands.left || hands.right); return; }
+  if (t.manual) {
+    if (handVis) { t.frames.push(vec); t.near.push(near); t.onface.push(hands.left || hands.right); }
+    return;
+  }
   if (t.state === "prime") {          // waiting for a fresh right-hand cover
     if (!hands.right) t.armed = true; // right hand must be off the face first...
     if (t.armed && hands.right) { t.state = "starting"; t.holdSince = now; t.lastOn = now; } // ...then cover
@@ -1419,9 +1442,11 @@ function teachStep(vec, hands, near, now) {
   // wrist is which, and trusting only "left" made real stop holds break and
   // fall back to REC mid-countdown. The per-hand off-the-face requirement
   // still keeps the starting right hand from stopping the capture instantly.
-  t.frames.push(vec);
-  t.near.push(near);
-  t.onface.push(hands.left || hands.right);
+  if (handVis) {
+    t.frames.push(vec);
+    t.near.push(near);
+    t.onface.push(hands.left || hands.right);
+  }
   if (!hands.left) t.canStopL = true;
   if (!hands.right) t.canStopR = true;
   const stopHeld = (t.canStopL && hands.left) || (t.canStopR && hands.right);
@@ -2138,7 +2163,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("queercoded build v14 (2026-07-11)");
+  console.log("queercoded build v15 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
