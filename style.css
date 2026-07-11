@@ -630,3 +630,6 @@ body.rot90 {
   transform-origin: top left;
   overflow: auto;
 }
+/* Rotated screens are tall and narrow: give the video the full width and
+   stack the panel underneath instead of squeezing them side by side. */
+body.rot90 .layout { grid-template-columns: 1fr; }
