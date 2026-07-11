@@ -1436,7 +1436,7 @@ function startTeach() {
   teach = {
     word, manual,
     state: manual ? "capturing" : "prime", // prime -> starting -> capturing
-    frames: [], near: [], onface: [], holdSince: 0, canStopL: false, canStopR: false, stopSince: 0,
+    frames: [], near: [], onface: [], holdSince: 0, canStopL: false, stopSince: 0,
     armed: false, // require the face to be uncovered once before starting
     startedAt: performance.now(),
   };
@@ -1480,24 +1480,23 @@ function teachStep(vec, hands, near, now, handVis) {
     if (now - t.holdSince >= START_HOLD_MS) {
       t.state = "capturing";
       t.frames = [vec]; t.near = [near]; t.onface = [hands.left || hands.right]; t.startedAt = now;
-      t.canStopL = false; t.canStopR = false; t.stopSince = 0; t.stopLastOn = 0;
+      t.canStopL = false; t.stopSince = 0; t.stopLastOn = 0;
     }
     return;
   }
-  // capturing: cover the face to stop. The LEFT hand is the cue (the big L),
-  // but either hand completes the stop once IT has been off the face since the
-  // capture began: with a palm on the face the model sometimes swaps which
-  // wrist is which, and trusting only "left" made real stop holds break and
-  // fall back to REC mid-countdown. The per-hand off-the-face requirement
-  // still keeps the starting right hand from stopping the capture instantly.
+  // capturing: ONLY the LEFT hand (the big L) stops and saves. While a
+  // recording is running, the right hand is completely inert; it can neither
+  // stop this capture nor arm another one, so a habitual right-hand cover
+  // mid-recording does nothing. canStopL requires the left hand to have been
+  // off the face once since the capture began, so a both-hands start cover
+  // can't stop the capture instantly.
   if (handVis) {
     t.frames.push(vec);
     t.near.push(near);
     t.onface.push(hands.left || hands.right);
   }
   if (!hands.left) t.canStopL = true;
-  if (!hands.right) t.canStopR = true;
-  const stopHeld = (t.canStopL && hands.left) || (t.canStopR && hands.right);
+  const stopHeld = t.canStopL && hands.left;
   if (stopHeld) {
     if (!t.stopSince) t.stopSince = now;
     t.stopLastOn = now;
@@ -2237,7 +2236,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v16 (2026-07-11)");
+  console.log("Queercoded build v17 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
