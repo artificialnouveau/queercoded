@@ -111,6 +111,20 @@ function trimNearFace(frames, near) {
   return frames.slice(a, b);
 }
 
+// Drop leading/trailing frames where the body is holding still. Teach
+// captures include the stand-still moments after the move and before the
+// stop cover; Perform segments are motion-bounded, so codes padded with
+// stillness score worse against live segments AND skew the energy gate
+// (a hold-diluted code looks "low energy" next to a motion-only segment).
+function trimStillEnds(frames) {
+  if (frames.length < 6) return frames;
+  const STILL = 0.035; // per-step max-landmark motion below this = holding still
+  let a = 0, b = frames.length;
+  while (a < b - 4 && maxPoseDist(frames[a], frames[a + 1]) < STILL) a++;
+  while (b > a + 4 && maxPoseDist(frames[b - 2], frames[b - 1]) < STILL) b--;
+  return frames.slice(a, b);
+}
+
 // How far the pose ever strays from its first frame. Used to reject captures
 // where the face was covered and uncovered with no gesture in between.
 function travelOf(frames) {
@@ -377,8 +391,20 @@ function dtw(A, B) {
 
 // ---------- Persistence (localStorage) ----------
 function loadTemplates() {
-  try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; }
-  catch { return []; }
+  let list;
+  try { list = JSON.parse(localStorage.getItem(STORE_KEY)) || []; }
+  catch { list = []; }
+  // Older codes were saved with the stand-still moments left in at both ends,
+  // which made them score worse against motion-bounded Perform segments and
+  // skewed the energy gate. Normalize them once here.
+  for (const t of list) {
+    if (!Array.isArray(t?.seq) || t.seq.length !== FIXED_LEN) continue;
+    const trimmed = trimStillEnds(t.seq);
+    if (trimmed.length >= 4 && trimmed.length < t.seq.length) {
+      t.seq = resampleSeq(trimmed, FIXED_LEN);
+    }
+  }
+  return list;
 }
 function saveTemplates() {
   localStorage.setItem(STORE_KEY, JSON.stringify(templates));
@@ -768,7 +794,7 @@ const MIN_ACTIVE_TRAVEL = 0.18;
 const SPEED_WIN_MS = 130;
 const MOVE_START = 0.13;
 const MOVE_END = 0.06;
-const SETTLE_MS = 260;
+const SETTLE_MS = 200;
 const MIN_MOVE_MS = 350;
 const MAX_MOVE_MS = 7000;
 const perfBuf = [];               // {vec, t}
@@ -793,7 +819,9 @@ function maxDevFrom(frames, ref) {
 }
 // After ANY word fires, nothing may fire for this long: the settle back to
 // neutral is itself a motion and must not trigger a second (different) word.
-const FIRE_GAP_MS = 900;
+// Short enough that a deliberate second pose right after the first still gets
+// its own classification.
+const FIRE_GAP_MS = 700;
 
 function perfPush(vec, now, face) {
   perfBuf.push({ vec, t: now, face: !!face });
@@ -953,7 +981,25 @@ function performStep(vec, now, face) {
       || fs.tailOn || fs.frac > 0.3) {
     barEl.style.width = "0%"; hideClosest(); return;
   }
-  const ranked = scoreSegment(segFrames);
+  let ranked = scoreSegment(segFrames);
+  // Chained moves: when two poses are performed without a full settle they
+  // merge into one long segment, which scores closest to the FIRST pose and
+  // mislabels the second as a repeat. If the segment runs long, also score
+  // just its tail at typical code length; the better score wins.
+  const durs = templates
+    .filter((t) => (t.family || "blaze") === currentFamily)
+    .map((t) => t.durMs || 2000)
+    .sort((x, y) => x - y);
+  if (durs.length) {
+    const medDur = durs[Math.floor(durs.length / 2)];
+    if (lastActive - moveStart > medDur * 1.6) {
+      const tail = framesInRange(lastActive - medDur, lastActive);
+      if (tail.length >= MIN_SEG_FRAMES) {
+        const rankedTail = scoreSegment(tail);
+        if (rankedTail && (!ranked || rankedTail[0].dist < ranked[0].dist)) ranked = rankedTail;
+      }
+    }
+  }
   if (!ranked) { barEl.style.width = "0%"; hideClosest(); return; }
   const { best, second, thresh } = showScore(ranked);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
@@ -1358,6 +1404,7 @@ function finishTeach(now, timedOut = false) {
   if (core.length < 3 || travelOf(core) < MIN_TRAVEL) {
     core = trimNearFace(t.frames, t.onface || []);
   }
+  core = trimStillEnds(core); // codes span the movement, not the holds around it
 
   // Same travel gate as segmentation, applied to manual and timed-out
   // recordings too: a capture that never really went anywhere is not a code.
@@ -2011,7 +2058,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queer Coded build v10 (2026-07-11)");
+  console.log("Queer Coded build v11 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
