@@ -772,15 +772,18 @@ async function runFrame() {
         // Hands carry most of a dance and most of the noise: an untracked
         // wrist gets a guessed position that pollutes captures and matches.
         // Teach only RECORDS frames, and Perform only matches, while at
-        // least one wrist is USABLE: confidently seen, or estimated above the
-        // shoulder line with its elbow tracked. Arms-up moves (YMCA and
-        // friends) push the wrists out the top of the frame, and those
-        // estimates are directionally sound, unlike hands-at-the-sides
-        // guesses, which stay excluded.
+        // least one wrist is USABLE: confidently seen, or clipped out the top
+        // of the frame by a VERIFIABLY raised arm (the tracked elbow is at
+        // shoulder height or higher and the wrist estimate points further
+        // up). Arms-up moves (YMCA and friends) pass; a hallucinated
+        // high-wrist estimate on a lowered arm cannot, because its elbow
+        // hangs below the shoulders.
         const shoulderMidY = ((lms[11]?.y ?? 0) + (lms[12]?.y ?? 0)) / 2;
         const wristUsable = (w, e) =>
           (w?.visibility ?? 0) > 0.35 ||
-          ((e?.visibility ?? 0) > 0.35 && !!w && w.y < shoulderMidY);
+          ((e?.visibility ?? 0) > 0.35 && !!w &&
+            e.y < shoulderMidY + 0.05 && // the arm is genuinely raised
+            w.y < e.y);                  // and the wrist continues upward
         const handVis = wristUsable(lms[15], lms[13]) || wristUsable(lms[16], lms[14]);
         if (teach) {
           teachStep(vec, hands, nearNow, now, handVis);
@@ -2244,7 +2247,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v18 (2026-07-11)");
+  console.log("Queercoded build v19 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
