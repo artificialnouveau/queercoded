@@ -23,9 +23,19 @@
         <video id="video" playsinline muted></video>
         <canvas id="overlay"></canvas>
         <div id="bigWord" class="big-word" aria-live="polite"></div>
-        <div id="countdown" class="countdown" hidden></div>
       </div>
-      <div id="status" class="status">Starting…</div>
+      <div class="status-bar">
+        <span id="countdown" class="pill" hidden></span>
+        <div id="status" class="status-text" aria-live="polite">Starting…</div>
+      </div>
+      <div class="model-row">
+        <label for="modelSel">Tracking model</label>
+        <select id="modelSel">
+          <option value="lite">Lite — fastest, least accurate</option>
+          <option value="full">Full — recommended for dance</option>
+          <option value="heavy">Heavy — most accurate, needs a fast computer</option>
+        </select>
+      </div>
     </section>
 
     <aside class="panel">
@@ -68,7 +78,12 @@
       <!-- TEACH -->
       <div class="tabpane" data-pane="teach">
         <h2>Teach a new code</h2>
-        <p class="muted">Name a word or phrase, then record the movement that means it. Hold still, perform your movement, then hold still again (or put hands on hips) to finish. The pauses are trimmed automatically. Record the same word more than once to add examples and make it easier to recognize.</p>
+        <ol class="steps muted">
+          <li>Type the word or phrase this movement will mean.</li>
+          <li>Click <b>Record movement</b> and hold still until the indicator under the video says <b>MOVE</b>.</li>
+          <li>Perform your movement, then hold still again. It saves by itself; no clicking needed.</li>
+        </ol>
+        <p class="muted">The pauses are trimmed automatically. Record the same word more than once to add examples and make it easier to recognize.</p>
 
         <label class="field">
           <span>Word or phrase</span>

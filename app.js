@@ -13,7 +13,7 @@ const NUM_LMS = 33;
 // A gesture starts when real MOTION is detected and ends on stillness or the
 // hands-on-hips rest pose. Motion-based starting (rather than "not in the rest
 // pose") means standing anywhere doing nothing can never start a capture.
-const MOVE_EPS = 0.14;            // max-landmark displacement that counts as movement...
+const MOVE_EPS = 0.12;            // max-landmark displacement that counts as movement...
 const MOVE_WIN_MS = 250;          // ...measured over this look-back window
 const PREROLL_MS = 300;           // include this much pre-movement history in the capture
 const IDLE_BUF_MS = 800;          // rolling history kept while idle
@@ -25,8 +25,17 @@ const REST_SETTLE_FRAMES = 5;     // frames of "rest" that end a capture
 // Time-window based so it is frame-rate independent.
 const STILL_WIN_SHORT_MS = 220;   // compare against ~this long ago...
 const STILL_WIN_LONG_MS = 450;    // ...and this long ago (catches oscillation)
-const STILL_EPS = 0.09;           // max-landmark displacement counting as still
+const STILL_EPS = 0.06;           // max-landmark displacement counting as still
 const STILL_CONSEC = 3;           // consecutive still frames required to end
+// A capture only closes as a real gesture once some landmark has travelled
+// this far (torso units) from the capture's starting pose. Below that the
+// "movement" was a twitch or tracker jitter: keep recording a little longer in
+// case the gesture is slow to build, then drop the capture quietly instead of
+// erroring with "no movement". This is what made slow, deliberate movements
+// read as nothing: they tripped the stillness check before covering any
+// distance, and the trimmed capture came back empty.
+const MIN_TRAVEL = 0.3;
+const FALSE_START_FRAMES = 20;    // settled frames after which a low-travel capture is dropped
 const MAX_SEG_MS = 6000;          // abandon a capture that never returns to rest
 const MAX_TEACH_MS = 8000;        // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
@@ -39,6 +48,7 @@ const octx = overlay.getContext("2d");
 const statusEl = document.getElementById("status");
 const bigWord = document.getElementById("bigWord");
 const countdownEl = document.getElementById("countdown");
+const modelSel = document.getElementById("modelSel");
 
 const threshInput = document.getElementById("thresh");
 const threshVal = document.getElementById("threshVal");
@@ -81,7 +91,7 @@ let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
 
 function newSeg() {
-  return { state: "idle", buf: [], frames: [], rest: [], times: [], restCount: 0, stillCount: 0, startedAt: 0 };
+  return { state: "idle", buf: [], frames: [], rest: [], times: [], restCount: 0, stillCount: 0, startedAt: 0, startVec: null, travel: 0 };
 }
 
 // Rolling idle-history helpers. The buffer holds {vec, rest, t} entries so a
@@ -284,15 +294,28 @@ function saveTemplates() { localStorage.setItem(STORE_KEY, JSON.stringify(templa
 function newId() { return "c_" + Math.random().toString(36).slice(2, 9) + performance.now().toString(36); }
 
 // ---------- MediaPipe ----------
-const MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+// All three variants output the same 33 landmarks, so saved codes stay
+// compatible when the user switches. Lite is quick but loses track of fast
+// limbs; Full is the best accuracy/speed balance for dance; Heavy is the most
+// accurate but can drop the frame rate on slower machines.
+const MODEL_BASE = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/";
+const MODELS = {
+  lite:  { label: "Lite",  url: MODEL_BASE + "pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+  full:  { label: "Full",  url: MODEL_BASE + "pose_landmarker_full/float16/1/pose_landmarker_full.task" },
+  heavy: { label: "Heavy", url: MODEL_BASE + "pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task" },
+};
+const MODEL_STORE_KEY = "queercoded.model.v1";
+let modelChoice = localStorage.getItem(MODEL_STORE_KEY);
+if (!MODELS[modelChoice]) modelChoice = "full";
+
+let fileset = null; // wasm runtime, fetched once and reused across model swaps
 
 async function initPose() {
-  const fileset = await FilesetResolver.forVisionTasks(
+  fileset = fileset || await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
   const opts = (delegate) => ({
-    baseOptions: { modelAssetPath: MODEL_URL, delegate },
+    baseOptions: { modelAssetPath: MODELS[modelChoice].url, delegate },
     runningMode: "VIDEO",
     numPoses: 1,
   });
@@ -302,6 +325,27 @@ async function initPose() {
   } catch (e) {
     console.warn("Pose GPU delegate failed, falling back to CPU:", e);
     landmarker = await PoseLandmarker.createFromOptions(fileset, opts("CPU"));
+  }
+}
+
+// Swap the pose model at runtime. The main loop skips detection while
+// `landmarker` is null, so the video keeps playing during the download.
+async function switchModel(key) {
+  if (!MODELS[key] || key === modelChoice) return;
+  modelChoice = key;
+  localStorage.setItem(MODEL_STORE_KEY, key);
+  if (teach) cancelTeach();
+  seg = newSeg();
+  const old = landmarker;
+  landmarker = null;
+  try { old?.close(); } catch {}
+  statusEl.textContent = `Loading ${MODELS[key].label} model…`;
+  try {
+    await initPose();
+    setPerformState("rest");
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = "Could not load the " + MODELS[key].label + " model: " + e.message;
   }
 }
 
@@ -378,6 +422,8 @@ function segmentStep(vec, rest, now) {
       seg.startedAt = now;
       seg.restCount = 0;
       seg.stillCount = 0;
+      seg.startVec = pre.frames[0] || vec;
+      seg.travel = 0;
     }
     setPerformState("rest");
     return;
@@ -387,11 +433,20 @@ function segmentStep(vec, rest, now) {
   seg.frames.push(vec);
   seg.rest.push(rest);
   seg.times.push(now);
+  seg.travel = Math.max(seg.travel, maxPoseDist(vec, seg.startVec));
   seg.stillCount = isStillNow(seg.frames, seg.times, now) ? seg.stillCount + 1 : 0;
   if (rest) seg.restCount++;
   else seg.restCount = 0;
-  if (seg.restCount >= REST_SETTLE_FRAMES || seg.stillCount >= STILL_CONSEC) {
+  const settled = seg.restCount >= REST_SETTLE_FRAMES || seg.stillCount >= STILL_CONSEC;
+  if (settled && seg.travel >= MIN_TRAVEL) {
     closeSegment(now);
+    return;
+  }
+  // Settled but never travelled: a twitch armed the capture. Wait a little in
+  // case the movement is slow to build, then drop it without matching.
+  if (seg.restCount >= FALSE_START_FRAMES || seg.stillCount >= FALSE_START_FRAMES) {
+    seg = newSeg();
+    setPerformState("rest");
     return;
   }
   if (now - seg.startedAt > MAX_SEG_MS) { seg = newSeg(); setPerformState("rest"); return; }
@@ -501,6 +556,7 @@ async function startTeach() {
   recordBtn.disabled = true;
   countdownEl.hidden = false;
   countdownEl.classList.remove("rec");
+  statusEl.textContent = "Get ready…";
   for (let i = 3; i >= 1; i--) { countdownEl.textContent = i; await sleep(600); }
 
   const manual = triggerMode === "manual";
@@ -508,6 +564,7 @@ async function startTeach() {
     word, manual,
     state: "prime",          // prime -> ready -> capturing (manual jumps straight to capturing)
     buf: [], frames: [], rest: [], times: [], restCount: 0, stillCount: 0,
+    startVec: null, travel: 0,
     startedAt: performance.now(),
   };
   recordBtn.disabled = false;
@@ -550,6 +607,8 @@ function teachStep(vec, rest, now) {
       t.times = pre.times;
       t.restCount = 0;
       t.stillCount = 0;
+      t.startVec = pre.frames[0] || vec;
+      t.travel = 0;
       t.startedAt = now;
     }
     return;
@@ -558,11 +617,22 @@ function teachStep(vec, rest, now) {
   t.frames.push(vec);
   t.rest.push(rest);
   t.times.push(now);
+  t.travel = Math.max(t.travel, maxPoseDist(vec, t.startVec));
   t.stillCount = isStillNow(t.frames, t.times, now) ? t.stillCount + 1 : 0;
   if (rest) t.restCount++;
   else t.restCount = 0;
-  if (t.restCount >= REST_SETTLE_FRAMES || t.stillCount >= STILL_CONSEC) {
+  const settled = t.restCount >= REST_SETTLE_FRAMES || t.stillCount >= STILL_CONSEC;
+  if (settled && t.travel >= MIN_TRAVEL) {
     finishTeach(now, false);
+    return;
+  }
+  // Settled but never travelled: false start. Go back to waiting for the real
+  // movement instead of failing the whole recording with an error.
+  if (t.restCount >= FALSE_START_FRAMES || t.stillCount >= FALSE_START_FRAMES) {
+    t.state = "ready";
+    t.buf = [];
+    t.frames = []; t.rest = []; t.times = [];
+    t.restCount = 0; t.stillCount = 0; t.travel = 0;
   }
 }
 
@@ -585,16 +655,16 @@ function updateTeachUI(bodyVisible, rest) {
       ? "Recording. Click Stop & save when done."
       : rest
         ? "Recording. Hold hands on hips to finish…"
-        : "Recording. Hold still or put hands on hips to finish.";
+        : "Recording. When your movement is done, hold still and it saves itself.";
     return;
   }
   countdownEl.classList.remove("rec");
   if (t.state === "prime") {
     countdownEl.textContent = "REST";
-    statusEl.textContent = "Hold still for a moment (hands on hips if you like).";
+    statusEl.textContent = "Step 1 of 2: hold still for a moment (hands on hips works too).";
   } else { // ready
     countdownEl.textContent = "MOVE";
-    statusEl.textContent = "Ready. Perform your movement, then hold still.";
+    statusEl.textContent = "Step 2 of 2: perform your movement now, then hold still.";
   }
 }
 
@@ -611,8 +681,13 @@ function finishTeach(now, timedOut = false) {
   // ends where the movement actually happened.
   const core = t.frames.length ? trimCapture(t.frames, t.rest, t.times) : [];
 
-  if (core.length < 3) {
-    setTeachMsg("No movement captured. Hold still, perform your movement, then hold still again.", "warn");
+  // Same travel gate as segmentation, applied to manual and timed-out
+  // recordings too: a capture that never really went anywhere is not a code.
+  let travel = 0;
+  for (const f of core) travel = Math.max(travel, maxPoseDist(f, core[0]));
+
+  if (core.length < 3 || travel < MIN_TRAVEL) {
+    setTeachMsg("No clear movement captured. Check the skeleton overlay is tracking your whole upper body, then try a bigger movement.", "warn");
     return;
   }
   const durMs = Math.max(300, Math.round(now - t.startedAt));
@@ -824,6 +899,7 @@ triggerModeSel.addEventListener("change", () => {
   setPerformState("rest");
 });
 soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
+modelSel.addEventListener("change", () => switchModel(modelSel.value));
 
 // Hold-to-capture: pointer (mouse/touch)
 holdBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startManual(); });
@@ -853,6 +929,7 @@ function escapeHtml(s) {
 // ---------- Boot ----------
 (async function boot() {
   threshVal.textContent = threshInput.value;
+  modelSel.value = modelChoice;
   renderCodeList();
   renderPhrase();
 
@@ -860,7 +937,7 @@ function escapeHtml(s) {
   // in parallel with the camera permission so the two overlap, and reassure the
   // user it is downloading, not frozen. The browser caches it after first load.
   let ready = false;
-  statusEl.textContent = "Requesting camera + downloading pose engine (~15 MB first load)…";
+  statusEl.textContent = "Requesting camera + downloading the pose model (first load can take a minute)…";
   const slow = setTimeout(() => {
     if (!ready) statusEl.textContent = "Still downloading the pose engine (first load only). Hang tight…";
   }, 10000);

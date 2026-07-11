@@ -43,9 +43,11 @@ Single-page, no build step. Three files: `index.html`, `style.css`, `app.js`
 
 ## Pose pipeline
 
-- **Model:** `pose_landmarker_lite` (fast, GPU delegate), `runningMode: VIDEO`,
-  one pose. 33 landmarks per frame, each with `x, y, z, visibility` in
-  normalized image coordinates.
+- **Model:** user-selectable `pose_landmarker` variant (`lite`, `full`, or
+  `heavy`; default `full`, choice persisted in localStorage). GPU delegate with
+  CPU fallback, `runningMode: VIDEO`, one pose. All variants emit the same 33
+  landmarks per frame, each with `x, y, z, visibility` in normalized image
+  coordinates, so saved codes survive a model switch.
 - **Visibility gate:** we only use a frame when shoulders + hips (landmarks
   11, 12, 23, 24) have visibility > 0.5. This avoids garbage when the person is
   partly out of frame.
