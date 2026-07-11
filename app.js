@@ -788,6 +788,23 @@ function energyCompatible(eLive, t) {
   return hi < 1e-6 || lo / hi >= ENERGY_RATIO_MIN;
 }
 
+// Peak excursion of a sequence from its own first frame (weighted pose
+// distance). A code's excursion says how far that move actually leaves
+// neutral; a live segment must reach a comparable share of it, or a
+// near-neutral wobble is being pattern-matched onto a real move.
+const tmplDev = new Map();
+function devOfSeq(seq) {
+  let m = 0;
+  for (const f of seq) { const d = poseDist(f, seq[0]); if (d > m) m = d; }
+  return m;
+}
+function devOf(t) {
+  let d = tmplDev.get(t.id);
+  if (d == null) { d = devOfSeq(t.seq); tmplDev.set(t.id, d); }
+  return d;
+}
+const DEV_RATIO_MIN = 0.5; // live excursion must be at least half the code's
+
 // Best distance per word for a candidate segment (current algorithm family).
 function scoreSegment(frames) {
   const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
@@ -798,9 +815,11 @@ function scoreSegment(frames) {
   if (frames.length < MIN_SEG_FRAMES) return null;
   const live = resampleSeq(frames, FIXED_LEN);
   const eLive = seqEnergy(live);
+  const devLive = devOfSeq(live);
   const perWord = new Map();
   for (const t of pool) {
-    if (!energyCompatible(eLive, t)) continue; // stillness can't match movement
+    if (!energyCompatible(eLive, t)) continue;          // stillness can't match movement
+    if (devLive < devOf(t) * DEV_RATIO_MIN) continue;   // near-neutral wobble can't match a real excursion
     const d = dtw(live, t.seq);
     const k = t.word.toLowerCase();
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
@@ -905,17 +924,23 @@ function recomputeWordStats() {
     const med = dists[Math.floor(dists.length / 2)];
     // A live performance sits farther from any example than examples sit from
     // each other, so allow roughly 2.4x the typical inter-example distance.
-    wordStats.set(k, Math.max(0.1, Math.min(0.6, med * 2.4)));
+    // The ceiling stays firm: inconsistent examples must not balloon a word's
+    // threshold until near-anything (including resting) matches it.
+    wordStats.set(k, Math.max(0.1, Math.min(0.42, med * 2.4)));
   }
 }
 
 // Effective threshold for a word: its auto value (if any) scaled by where the
-// user has the global sensitivity slider, else the slider value itself.
+// user has the global sensitivity slider, else the slider value itself. Both
+// paths are hard-capped: DTW's path normalization understates the mismatch
+// between a still body and a moving code, so a loose threshold lets standing
+// "match" an arm move. 0.42 (and 0.35 for single-example words) keeps even a
+// maxed-out slider inside sane territory.
 function thresholdFor(word) {
   const base = parseFloat(threshInput.value);
   const auto = wordStats.get(word.toLowerCase());
-  if (auto == null) return base;
-  return Math.max(0.06, Math.min(0.6, auto * (base / DEFAULT_SENS)));
+  if (auto == null) return Math.min(base, 0.35);
+  return Math.max(0.06, Math.min(0.42, auto * (base / DEFAULT_SENS)));
 }
 
 function matchAndFire(frames, now) {
@@ -928,10 +953,12 @@ function matchAndFire(frames, now) {
   }
   const live = resampleSeq(frames, FIXED_LEN);
   const eLive = seqEnergy(live);
+  const devLive = devOfSeq(live);
   // Best (smallest) distance per distinct word.
   const perWord = new Map();
   for (const t of pool) {
-    if (!energyCompatible(eLive, t)) continue; // stillness can't match movement
+    if (!energyCompatible(eLive, t)) continue;        // stillness can't match movement
+    if (devLive < devOf(t) * DEV_RATIO_MIN) continue; // near-neutral wobble can't match a real excursion
     const k = t.word.toLowerCase();
     const d = dtw(live, t.seq);
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
@@ -1809,6 +1836,8 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 });
 
 (async function boot() {
+  // Build tag, so "which version am I actually running?" has an answer.
+  console.log("Queer Coded build v6 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
