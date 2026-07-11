@@ -463,3 +463,8 @@ a { color: var(--yellow); }
 .intro-hint b { color: var(--yellow); }
 .intro-hint .btn { flex-shrink: 0; }
 
+
+/* Reading pages (About / AlgoDance): hide the video stage, panel fills width. */
+.layout.content-full { grid-template-columns: 1fr; }
+.layout.content-full .stage { display: none; }
+.layout.content-full .pdf-frame { height: 82vh; }

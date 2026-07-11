@@ -790,6 +790,7 @@ function startTeach() {
     word, manual,
     state: manual ? "capturing" : "prime", // prime -> starting -> capturing
     frames: [], near: [], holdSince: 0, canStop: false, stopSince: 0,
+    armed: false, // require the face to be uncovered once before starting
     startedAt: performance.now(),
   };
   if (manual) {
@@ -810,8 +811,9 @@ function startTeach() {
 function teachStep(vec, rest, near, now) {
   const t = teach;
   if (t.manual) { t.frames.push(vec); t.near.push(near); return; }
-  if (t.state === "prime") {          // waiting for the face to be covered
-    if (rest) { t.state = "starting"; t.holdSince = now; }
+  if (t.state === "prime") {          // waiting for a fresh face cover
+    if (!rest) t.armed = true;        // hand must leave the face first...
+    if (t.armed && rest) { t.state = "starting"; t.holdSince = now; } // ...then cover
     return;
   }
   if (t.state === "starting") {       // start countdown; uncovering cancels it
@@ -854,11 +856,16 @@ function updateTeachUI(bodyVisible, rest) {
     else if (t.state === "capturing" && !t.stopSince) statusEl.textContent = "Recording. Cover your face and hold to stop and save.";
     return;
   }
-  // prime: waiting for the face to be covered
+  // prime: waiting for a fresh face cover
   countdownEl.hidden = false;
   countdownEl.classList.remove("rec");
-  countdownEl.textContent = "COVER";
-  statusEl.textContent = "Cover your face with one hand and hold to start the countdown.";
+  if (!t.armed) {
+    countdownEl.textContent = "…";
+    statusEl.textContent = "Lower your hand first, then cover your face to start the countdown.";
+  } else {
+    countdownEl.textContent = "COVER";
+    statusEl.textContent = "Cover your face with one hand and hold to start the countdown.";
+  }
 }
 
 function finishTeach(now, timedOut = false) {
@@ -1200,6 +1207,10 @@ function activateTab(tab, focus = false) {
     t.tabIndex = on ? 0 : -1;
   }
   document.querySelectorAll(".tabpane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
+  // About / AlgoDance are reading pages: hide the video stage and let the panel
+  // fill the width.
+  const contentTab = name === "about" || name === "algodance";
+  document.querySelector(".layout").classList.toggle("content-full", contentTab);
   // Leaving the Teach tab mid-recording abandons it, so an active teach can
   // never keep "recording" (REC) into Perform. Also drop any manual capture.
   if (teach && name !== "teach") cancelTeach();
