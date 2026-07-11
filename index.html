@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>queercoded: move to speak</title>
-  <link rel="stylesheet" href="style.css?v=15" />
+  <title>Queercoded: move to speak</title>
+  <link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
   <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
@@ -26,6 +26,9 @@
   <!-- Reopens the collapsed header while reading the AlgoDance zine. -->
   <button id="headerToggle" class="header-toggle" hidden>Menu</button>
 
+  <!-- Leaves kiosk (fullscreen performance) mode. -->
+  <button id="kioskExit" class="kiosk-exit" hidden>Exit kiosk</button>
+
   <header class="topbar">
     <div class="orient">
       <label for="orientSel">Layout</label>
@@ -34,7 +37,7 @@
         <option value="rotated">Vertical (rotated 90)</option>
       </select>
     </div>
-    <h1 class="logo" aria-label="queercoded"><span aria-hidden="true"><i style="color:#E40303">q</i><i style="color:#FF8C00">u</i><i style="color:#FFED00">e</i><i style="color:#008026">e</i><i style="color:#004DFF">r</i><i style="color:#750787">c</i><i style="color:#E40303">o</i><i style="color:#FF8C00">d</i><i style="color:#008026">e</i><i style="color:#004DFF">d</i></span></h1>
+    <h1 class="logo" aria-label="Queercoded"><span aria-hidden="true"><i style="color:#E40303">Q</i><i style="color:#FF8C00">u</i><i style="color:#FFED00">e</i><i style="color:#008026">e</i><i style="color:#004DFF">r</i><i style="color:#750787">c</i><i style="color:#E40303">o</i><i style="color:#FF8C00">d</i><i style="color:#008026">e</i><i style="color:#004DFF">d</i></span></h1>
     <p class="tagline">Code a movement. Move to speak.</p>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button class="tab is-active" data-tab="teach" role="tab" id="tab-teach" aria-controls="pane-teach" aria-selected="true">Teach</button>
@@ -92,6 +95,8 @@
           <h3>Your codes</h3>
           <div id="performList" class="chips" aria-live="polite"></div>
         </div>
+
+        <button id="kioskBtn" class="btn ghost small">Kiosk mode: fullscreen performance view</button>
 
         <label class="field">
           <span>Sensitivity <em id="threshVal"></em></span>
@@ -165,8 +170,8 @@
 
       <!-- ABOUT -->
       <div class="tabpane" data-pane="about" id="pane-about" role="tabpanel" aria-labelledby="tab-about" hidden>
-        <h2>About queercoded</h2>
-        <p class="muted">queercoded turns body movement into words. You teach the app a movement bound to a word or phrase, then perform it to make the word appear and be spoken.</p>
+        <h2>About Queercoded</h2>
+        <p class="muted">Queercoded turns body movement into words. You teach the app a movement bound to a word or phrase, then perform it to make the word appear and be spoken.</p>
 
         <h3>Your privacy</h3>
         <p class="muted">Everything happens locally, in your browser, on your device.</p>
@@ -199,6 +204,6 @@
     </aside>
   </main>
 
-  <script type="module" src="app.js?v=15"></script>
+  <script type="module" src="app.js?v=16"></script>
 </body>
 </html>

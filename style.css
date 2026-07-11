@@ -500,6 +500,46 @@ input:focus-visible,
 }
 .layout.pdf-full .topbar { margin-bottom: 12px; }
 
+/* Kiosk mode: fullscreen performance view for installations. The camera
+   fills the screen; matched words overlay it; every control disappears
+   except the floating Exit button. Opt-in only, never the default. */
+body.kiosk { background: #000; overflow: hidden; }
+body.kiosk .topbar,
+body.kiosk .panel,
+body.kiosk .status-bar,
+body.kiosk .model-row,
+body.kiosk .header-toggle { display: none !important; }
+body.kiosk .layout { grid-template-columns: 1fr; padding: 0; gap: 0; }
+body.kiosk .video-wrap {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  z-index: 5;
+}
+.kiosk-exit {
+  position: fixed;
+  top: 12px;
+  right: 14px;
+  z-index: 70;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.25);
+  background: rgba(0,0,0,.45);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: .35;
+  transition: opacity .15s;
+}
+.kiosk-exit:hover { opacity: 1; }
+.kiosk-exit[hidden] { display: none; }
+
 /* Collapsed header while reading the zine; the floating button restores it.
    The page behind the zine goes fully dark so no light border can peek out
    below the document on any viewport height. */

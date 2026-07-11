@@ -673,6 +673,50 @@ function buildPoseStrip(seq, { count = 3, size = 74 } = {}) {
   return canvas;
 }
 
+// ---------- One-Euro landmark smoothing ----------
+// MediaPipe output jitters frame to frame, which shakes the drawn skeleton,
+// pollutes captures, and trips the motion segmenter. A One-Euro filter
+// smooths hard when the body is slow (kills jitter) and barely at all when
+// it is fast (no lag on real dance moves). Applied to the tracked person's
+// landmarks before anything else consumes them.
+const EURO_MIN_CUTOFF = 1.5; // Hz: smoothing floor at rest
+const EURO_BETA = 0.3;       // how quickly speed unlocks the filter
+const EURO_D_CUTOFF = 1.0;   // Hz: derivative smoothing
+const euro = { t: 0, x: null, dx: null, n: 0 };
+function lowpassAlpha(dt, cutoff) {
+  const r = 2 * Math.PI * cutoff * dt;
+  return r / (r + 1);
+}
+function smoothPose(lms, now) {
+  const t = now / 1000;
+  const n = lms.length;
+  // (Re)initialize after a tracking gap or a person switch (big shoulder jump).
+  const jumped = euro.x && euro.n === n && lms[11] && euro.x[11]
+    && Math.hypot(lms[11].x - euro.x[11].x, lms[11].y - euro.x[11].y) > 0.25;
+  if (!euro.x || euro.n !== n || t - euro.t > 0.5 || jumped) {
+    euro.x = lms.map((p) => ({ x: p?.x ?? 0, y: p?.y ?? 0 }));
+    euro.dx = lms.map(() => ({ x: 0, y: 0 }));
+    euro.n = n;
+    euro.t = t;
+    return lms;
+  }
+  const dt = Math.max(1e-3, t - euro.t);
+  euro.t = t;
+  const ad = lowpassAlpha(dt, EURO_D_CUTOFF);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = lms[i];
+    if (!p) { out[i] = p; continue; }
+    const prev = euro.x[i], d = euro.dx[i];
+    d.x += ad * ((p.x - prev.x) / dt - d.x);
+    d.y += ad * ((p.y - prev.y) / dt - d.y);
+    prev.x += lowpassAlpha(dt, EURO_MIN_CUTOFF + EURO_BETA * Math.abs(d.x)) * (p.x - prev.x);
+    prev.y += lowpassAlpha(dt, EURO_MIN_CUTOFF + EURO_BETA * Math.abs(d.y)) * (p.y - prev.y);
+    out[i] = { x: prev.x, y: prev.y, visibility: p.visibility };
+  }
+  return out;
+}
+
 // ---------- Main loop ----------
 // Async because MoveNet and YOLO detect asynchronously; `inflight` keeps frames
 // from overlapping. Detection is throttled to ~30fps, which is plenty for
@@ -686,7 +730,10 @@ async function loop() {
   // stop the loop (that is what froze detection). Errors are logged, not fatal.
   requestAnimationFrame(loop);
   const t = performance.now();
-  if (ready && backend && !inflight && video.readyState >= 2 && t - lastDetectAt >= MIN_FRAME_MS) {
+  // Reading tabs (About / AlgoDance) hide the video entirely: skip detection
+  // there so the GPU and battery are not burned rendering nothing.
+  const idleTab = currentTab === "about" || currentTab === "algodance";
+  if (ready && backend && !inflight && !idleTab && video.readyState >= 2 && t - lastDetectAt >= MIN_FRAME_MS) {
     lastDetectAt = t;
     inflight = true;
     try { await runFrame(); }
@@ -704,7 +751,8 @@ async function runFrame() {
     octx.clearRect(0, 0, overlay.width, overlay.height);
 
     let bodyVisible = false;
-    const lms = pickMainPose(poses);
+    let lms = pickMainPose(poses);
+    if (lms) lms = smoothPose(lms, now);
     if (lms) {
       drawSkeleton(lms, backend.connections, "rgba(255,0,42,0.9)", "#ECFF00");
 
@@ -2035,6 +2083,32 @@ window.addEventListener("resize", () => {
   zineResizeTimer = setTimeout(() => renderZinePage(zine.page, 0), 200);
 });
 
+// ---------- Kiosk mode ----------
+// Fullscreen performance view for installations: just the camera and the
+// matched words, no panel, no header. Opt-in from the Perform tab; Esc or
+// the floating Exit button leaves it. Never the default.
+const kioskBtn = document.getElementById("kioskBtn");
+const kioskExit = document.getElementById("kioskExit");
+function setKiosk(on) {
+  document.body.classList.toggle("kiosk", on);
+  kioskExit.hidden = !on;
+  if (on) {
+    activateTab(document.getElementById("tab-perform")); // kiosk IS performing
+    document.documentElement.requestFullscreen?.().catch(() => {});
+  } else if (document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {});
+  }
+}
+kioskBtn.addEventListener("click", () => setKiosk(true));
+kioskExit.addEventListener("click", () => setKiosk(false));
+document.addEventListener("fullscreenchange", () => {
+  // Esc leaves browser fullscreen; drop the kiosk chrome with it.
+  if (!document.fullscreenElement && document.body.classList.contains("kiosk")) {
+    document.body.classList.remove("kiosk");
+    kioskExit.hidden = true;
+  }
+});
+
 // Header collapse while reading: the zine wants the whole screen. The
 // floating Menu button toggles the header back for switching tabs.
 headerToggle.addEventListener("click", () => {
@@ -2163,7 +2237,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("queercoded build v15 (2026-07-11)");
+  console.log("Queercoded build v16 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();

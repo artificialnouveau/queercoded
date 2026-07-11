@@ -1,4 +1,4 @@
-# queercoded
+# Queercoded
 
 Code a movement. Move to speak.
 
