@@ -565,11 +565,8 @@ function flashRiso(now, ms = 800) {
 // used, so no webcam image is ever stored or drawn. Slots shared by every
 // algorithm family (BlazePose 33 and the COCO-17 mapping) so figures draw the
 // same regardless of which model taught the code.
-const FIG_BONES = [
-  [11, 13], [13, 15], [12, 14], [14, 16], // arms
-  [23, 25], [25, 27], [24, 26], [26, 28], // legs
-  [11, 12], [23, 24], [11, 23], [12, 24], // shoulders, hips, sides
-];
+const ARM_BONES = [[11, 13], [13, 15], [12, 14], [14, 16]];
+const LEG_BONES = [[23, 25], [25, 27], [24, 26], [26, 28]];
 function figPoint(frame, i, cx, cy, sc) {
   const x = frame[i * 2], y = frame[i * 2 + 1];
   // A landmark a 17-point code never filled stays exactly at the origin.
@@ -577,33 +574,64 @@ function figPoint(frame, i, cx, cy, sc) {
   // Mirror x so the figure faces the same way as the mirrored live video.
   return { x: cx - x * sc, y: cy + y * sc, v: filled };
 }
-function paintFigure(ctx, frame, cx, cy, sc, s, color) {
+// One colour layer of the figure. `sep` (a dark seam colour) is drawn as a
+// halo under each limb, hand, and the head, like a print knockout: it is what
+// keeps an arm readable when it lies on top of the torso instead of melting
+// into one blob.
+function paintFigure(ctx, frame, cx, cy, sc, s, color, sep) {
   const P = (i) => figPoint(frame, i, cx, cy, sc);
-  ctx.fillStyle = color;
-  ctx.strokeStyle = color;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  // Torso as a filled quad so the body reads as a solid silhouette.
+  const halo = s * 0.05;
+  const bone = (A, B, w) => {
+    if (!A.v || !B.v) return;
+    if (sep) {
+      ctx.strokeStyle = sep;
+      ctx.lineWidth = w + halo;
+      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+  };
+  const disc = (x, y, r) => {
+    if (sep) {
+      ctx.fillStyle = sep;
+      ctx.beginPath(); ctx.arc(x, y, r + halo * 0.5, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  };
+  // Torso as a filled quad so the body reads as a solid core (no edge strokes:
+  // they only fattened the blob).
   const torso = [P(11), P(12), P(24), P(23)].filter((p) => p.v);
   if (torso.length >= 3) {
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(torso[0].x, torso[0].y);
     for (const p of torso.slice(1)) ctx.lineTo(p.x, p.y);
     ctx.closePath();
     ctx.fill();
   }
-  // Limbs slightly slimmer than before, so an arm reads apart from the body.
-  ctx.lineWidth = s * 0.11;
-  ctx.beginPath();
-  for (const [a, b] of FIG_BONES) {
-    const A = P(a), B = P(b);
-    if (!A.v || !B.v) continue;
-    ctx.moveTo(A.x, A.y);
-    ctx.lineTo(B.x, B.y);
+  // Legs first, then feet.
+  for (const [a, b] of LEG_BONES) bone(P(a), P(b), s * 0.1);
+  for (const [ank, toe] of [[27, 31], [28, 32]]) {
+    const A = P(ank);
+    if (!A.v) continue;
+    const T = P(toe);
+    const tx = T.v ? T.x : A.x - s * 0.06;
+    const ty = T.v ? T.y : A.y + s * 0.025;
+    bone(A, { x: tx, y: ty, v: true }, s * 0.08);
   }
-  ctx.stroke();
-  // Hands: a disc just past each wrist (centred on the hand landmarks when a
-  // 33-point code has them), so a raised hand is legible, not just an arm.
+  // Neck + head under the arms, so raised arms stay on top.
+  const nose = P(0), ls = P(11), rs = P(12);
+  const hx = nose.v ? nose.x : (ls.x + rs.x) / 2;
+  const hy = nose.v ? nose.y : (ls.y + rs.y) / 2 - s * 0.14;
+  if (ls.v && rs.v) bone({ x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2, v: true }, { x: hx, y: hy, v: true }, s * 0.06);
+  disc(hx, hy, s * 0.105);
+  // Arms LAST and seamed, the most expressive part of a pose, always readable
+  // even lying across the torso; a hand disc caps each wrist.
+  for (const [a, b] of ARM_BONES) bone(P(a), P(b), s * 0.09);
   for (const [w, k1, k2] of [[15, 17, 19], [16, 18, 20]]) {
     const W = P(w);
     if (!W.v) continue;
@@ -611,49 +639,21 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
     let hx2 = W.x, hy2 = W.y, cnt = 1;
     if (a.v) { hx2 += a.x; hy2 += a.y; cnt++; }
     if (b.v) { hx2 += b.x; hy2 += b.y; cnt++; }
-    ctx.beginPath();
-    ctx.arc(hx2 / cnt, hy2 / cnt, s * 0.055, 0, Math.PI * 2);
-    ctx.fill();
+    disc(hx2 / cnt, hy2 / cnt, s * 0.055);
   }
-  // Feet: a short stroke from each ankle toward the toes.
-  ctx.lineWidth = s * 0.085;
-  for (const [ank, toe] of [[27, 31], [28, 32]]) {
-    const A = P(ank);
-    if (!A.v) continue;
-    const T = P(toe);
-    ctx.beginPath();
-    ctx.moveTo(A.x, A.y);
-    if (T.v) ctx.lineTo(T.x, T.y);
-    else ctx.lineTo(A.x - s * 0.06, A.y + s * 0.025);
-    ctx.stroke();
-  }
-  // Head on a short neck: a disc at the nose, or above the shoulders if the
-  // nose is unseen.
-  const nose = P(0), ls = P(11), rs = P(12);
-  const hx = nose.v ? nose.x : (ls.x + rs.x) / 2;
-  const hy = nose.v ? nose.y : (ls.y + rs.y) / 2 - s * 0.14;
-  if (ls.v && rs.v) {
-    ctx.lineWidth = s * 0.07;
-    ctx.beginPath();
-    ctx.moveTo((ls.x + rs.x) / 2, (ls.y + rs.y) / 2);
-    ctx.lineTo(hx, hy);
-    ctx.stroke();
-  }
-  ctx.beginPath();
-  ctx.arc(hx, hy, s * 0.11, 0, Math.PI * 2);
-  ctx.fill();
 }
 function drawFigureCell(ctx, frame, x0, s) {
   const cx = x0 + s * 0.5;
   const cy = s * 0.52;     // hips near centre so legs and raised arms both fit
-  const sc = s * 0.18;     // torso length in px
+  const sc = s * 0.2;      // torso length in px: a bit larger so limbs read
   const off = s * 0.05;    // yellow print offset
-  // Yellow layer first (offset), then red on top: the riso registration look.
+  // Yellow layer first (offset, no seams: it is the misprint shadow), then
+  // red on top with dark seams separating limbs from the body.
   ctx.save();
   ctx.translate(off, off * 0.7);
-  paintFigure(ctx, frame, cx, cy, sc, s, "#ECFF00");
+  paintFigure(ctx, frame, cx, cy, sc, s, "#ECFF00", null);
   ctx.restore();
-  paintFigure(ctx, frame, cx, cy, sc, s, "#FF002A");
+  paintFigure(ctx, frame, cx, cy, sc, s, "#FF002A", "#1d1112");
 }
 // A row of `count` evenly-spaced frames from a stored seq, as one canvas.
 function buildPoseStrip(seq, { count = 3, size = 74 } = {}) {
@@ -786,12 +786,12 @@ async function runFrame() {
             w.y < e.y);                  // and the wrist continues upward
         const handVis = wristUsable(lms[15], lms[13]) || wristUsable(lms[16], lms[14]);
         if (teach) {
-          teachStep(vec, hands, nearNow, now, handVis);
+          teachStep(vec, hands, nearNow, now);
         } else if (currentTab === "perform") {
           // Recognition belongs to the Perform tab only: on Teach or Codes an
           // idle body must never fire (or even score) matches.
           if (triggerMode === "manual") {
-            if (manualCapturing && handVis) manualFrames.push(vec);
+            if (manualCapturing) manualFrames.push(vec); // deliberate capture: record everything
           } else if (handVis) {
             // Perform is continuous but fires only when a whole move completes.
             performStep(vec, now, hands.left || hands.right);
@@ -1470,14 +1470,16 @@ const HOLD_GRACE_MS = 350;
 // re-arm a start and there is no ambiguity about which countdown is which.
 // A hand can only stop the capture after IT has been off the face once, so the
 // starting hand still resting there can't stop the capture instantly.
-// Frames are only RECORDED while at least one wrist is confidently tracked
-// (handVis); the trigger state machine keeps running regardless, so the
-// countdowns stay honest while a briefly untracked hand cannot write guessed
-// wrist positions into the saved code.
-function teachStep(vec, hands, near, now, handVis) {
+// Teach records EVERY frame while capturing. Fast movement blurs the hands
+// and drops wrist confidence, so gating recording on hand visibility threw
+// away the most energetic frames and made big movements fail the travel
+// check. Recording is deliberate, previewed as a ghost right after saving,
+// and the One-Euro filter tames wild wrist guesses, so unlike Perform
+// matching, teaching does not require visible hands.
+function teachStep(vec, hands, near, now) {
   const t = teach;
   if (t.manual) {
-    if (handVis) { t.frames.push(vec); t.near.push(near); t.onface.push(hands.left || hands.right); }
+    t.frames.push(vec); t.near.push(near); t.onface.push(hands.left || hands.right);
     return;
   }
   if (t.state === "prime") {          // waiting for a fresh right-hand cover
@@ -1501,11 +1503,9 @@ function teachStep(vec, hands, near, now, handVis) {
   // mid-recording does nothing. canStopL requires the left hand to have been
   // off the face once since the capture began, so a both-hands start cover
   // can't stop the capture instantly.
-  if (handVis) {
-    t.frames.push(vec);
-    t.near.push(near);
-    t.onface.push(hands.left || hands.right);
-  }
+  t.frames.push(vec);
+  t.near.push(near);
+  t.onface.push(hands.left || hands.right);
   if (!hands.left) t.canStopL = true;
   const stopHeld = t.canStopL && hands.left;
   if (stopHeld) {
@@ -2247,7 +2247,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v19 (2026-07-11)");
+  console.log("Queercoded build v20 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
