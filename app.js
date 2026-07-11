@@ -1690,36 +1690,103 @@ async function openZine() {
   }
 }
 
+// Per-page rotation. Some pages hold sideways text; where the PDF has a text
+// layer, the dominant baseline direction detects and fixes that automatically,
+// and the Rotate button stores a manual quarter-turn per page (remembered
+// across visits) for scanned pages the detector cannot read.
+const ZINE_ROT_KEY = "queercoded.zineRot.v1";
+let zineRot = {};
+try { zineRot = JSON.parse(localStorage.getItem(ZINE_ROT_KEY)) || {}; } catch { zineRot = {}; }
+const zineAutoRot = new Map();
+async function zineExtraRot(page, n) {
+  if (zineRot[n] != null) return zineRot[n];
+  let auto = zineAutoRot.get(n);
+  if (auto == null) {
+    auto = 0;
+    try {
+      const tc = await page.getTextContent();
+      let horiz = 0, up = 0, down = 0;
+      for (const it of tc.items) {
+        const [a, b] = it.transform; // text baseline direction in PDF space
+        if (Math.abs(a) >= Math.abs(b)) horiz++;
+        else if (b > 0) up++;
+        else down++;
+      }
+      const total = horiz + up + down;
+      if (total >= 5 && up > total * 0.6) auto = 90;         // reads bottom-to-top
+      else if (total >= 5 && down > total * 0.6) auto = 270; // reads top-to-bottom
+    } catch {}
+    zineAutoRot.set(n, auto);
+  }
+  return auto;
+}
+
+// Pages render into OFFSCREEN canvases, cached as promises (so concurrent
+// requests share one render) and swapped in only when ready: the previous
+// page stays visible instead of flashing white, and prerendered neighbours
+// make most flips instant.
+const zineCache = new Map(); // "page@rot@height" -> Promise<canvas>
+async function paintZinePage(n, boxH) {
+  if (!zine?.doc || n < 1 || n > zine.doc.numPages) return null;
+  const page = await zine.doc.getPage(n);
+  const extra = await zineExtraRot(page, n);
+  const rot = (page.rotate + extra + 360) % 360;
+  const key = `${n}@${rot}@${boxH}`;
+  if (!zineCache.has(key)) {
+    zineCache.set(key, (async () => {
+      const vp1 = page.getViewport({ scale: 1, rotation: rot });
+      const scale = (boxH / vp1.height) * Math.min(2, window.devicePixelRatio || 1);
+      const vp = page.getViewport({ scale, rotation: rot });
+      const off = document.createElement("canvas");
+      off.width = vp.width;
+      off.height = vp.height;
+      await page.render({ canvasContext: off.getContext("2d"), viewport: vp }).promise;
+      return off;
+    })());
+    while (zineCache.size > 6) zineCache.delete(zineCache.keys().next().value);
+  }
+  return zineCache.get(key);
+}
+
 async function renderZinePage(n, dir) {
   if (!zine?.doc) return;
   n = Math.max(1, Math.min(zine.doc.numPages, n));
   zine.page = n;
   const my = ++zine.seq; // newer requests win; stale renders are dropped
-  const page = await zine.doc.getPage(n);
-  if (my !== zine.seq) return;
   const boxH = zineEl.clientHeight || 640;
-  const vp1 = page.getViewport({ scale: 1 });
-  const scale = (boxH / vp1.height) * Math.min(2, window.devicePixelRatio || 1);
-  const vp = page.getViewport({ scale });
-  try { zine.task?.cancel(); } catch {}
-  zineCanvas.width = vp.width;
-  zineCanvas.height = vp.height;
-  const task = page.render({ canvasContext: zineCanvas.getContext("2d"), viewport: vp });
-  zine.task = task;
-  try { await task.promise; } catch { return; } // cancelled by a newer flip
-  if (my !== zine.seq) return;
+  let canvas = null;
+  try { canvas = await paintZinePage(n, boxH); } catch (e) { console.warn("zine render:", e); }
+  if (my !== zine.seq || !canvas) return;
+  zineCanvas.width = canvas.width;
+  zineCanvas.height = canvas.height;
+  zineCanvas.getContext("2d").drawImage(canvas, 0, 0);
   zineNum.textContent = `${n} / ${zine.doc.numPages}`;
   if (dir) {
     zineCanvas.classList.remove("flip-left", "flip-right");
     void zineCanvas.offsetWidth; // restart the animation
     zineCanvas.classList.add(dir > 0 ? "flip-right" : "flip-left");
   }
+  // Warm the neighbours so the next flip swaps in without a wait.
+  paintZinePage(n + 1, boxH)?.catch?.(() => {});
+  paintZinePage(n - 1, boxH)?.catch?.(() => {});
 }
 
 function zineFlip(dir) {
   if (!zine?.doc) return;
   renderZinePage(zine.page + dir, dir);
 }
+
+// Quarter-turn the current page clockwise; remembered per page.
+document.getElementById("zineRotate").addEventListener("click", async () => {
+  if (!zine?.doc) return;
+  const n = zine.page;
+  const page = await zine.doc.getPage(n);
+  const cur = await zineExtraRot(page, n);
+  zineRot[n] = (cur + 90) % 360;
+  try { localStorage.setItem(ZINE_ROT_KEY, JSON.stringify(zineRot)); } catch {}
+  for (const k of [...zineCache.keys()]) if (k.startsWith(n + "@")) zineCache.delete(k);
+  renderZinePage(n, 0);
+});
 zinePrevBtn.addEventListener("click", () => zineFlip(-1));
 zineNextBtn.addEventListener("click", () => zineFlip(1));
 // Click the page itself: right half flips forward, left half back.
@@ -1868,7 +1935,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queer Coded build v8 (2026-07-11)");
+  console.log("Queer Coded build v9 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
