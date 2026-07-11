@@ -832,6 +832,8 @@ async function runFrame() {
         if (teach.stopSince) teach.stopSince += dt;
         if (teach.lastOn) teach.lastOn += dt;
         if (teach.stopLastOn) teach.stopLastOn += dt;
+        if (teach.rOnSince) teach.rOnSince += dt;
+        if (teach.lOnSince) teach.lOnSince += dt;
       }
       teach.lastTickAt = now;
     }
@@ -1463,6 +1465,10 @@ function startTeach() {
 // A hand may drop off the face for up to this long mid-hold (tracking flicker,
 // slight slip) without resetting the countdown. Longer gaps cancel it.
 const HOLD_GRACE_MS = 350;
+// A hand must STAY on the face this long before any countdown appears, so a
+// hand merely passing over the face triggers nothing at all instead of
+// flashing a distracting countdown that instantly cancels.
+const ARM_DELAY_MS = 450;
 
 // One frame of a teaching capture. RIGHT hand over the face held for the 3-2-1
 // countdown STARTS recording; LEFT hand over the face held for the countdown
@@ -1483,8 +1489,13 @@ function teachStep(vec, hands, near, now) {
     return;
   }
   if (t.state === "prime") {          // waiting for a fresh right-hand cover
-    if (!hands.right) t.armed = true; // right hand must be off the face first...
-    if (t.armed && hands.right) { t.state = "starting"; t.holdSince = now; t.lastOn = now; } // ...then cover
+    if (!hands.right) { t.armed = true; t.rOnSince = 0; } // right hand must be off the face first...
+    else if (t.armed) {
+      // ...then cover and STAY. Only after ARM_DELAY_MS does the countdown
+      // begin, so a hand sweeping past the face never flashes one.
+      if (!t.rOnSince) t.rOnSince = now;
+      if (now - t.rOnSince >= ARM_DELAY_MS) { t.state = "starting"; t.holdSince = now; t.lastOn = now; }
+    }
     return;
   }
   if (t.state === "starting") {       // start countdown; leaving the face cancels it
@@ -1506,8 +1517,11 @@ function teachStep(vec, hands, near, now) {
   t.frames.push(vec);
   t.near.push(near);
   t.onface.push(hands.left || hands.right);
-  if (!hands.left) t.canStopL = true;
-  const stopHeld = t.canStopL && hands.left;
+  if (!hands.left) { t.canStopL = true; t.lOnSince = 0; }
+  else if (t.canStopL && !t.lOnSince) t.lOnSince = now;
+  // The stop countdown also waits out ARM_DELAY_MS of sustained cover, so a
+  // left hand sweeping past the face mid-movement cannot flash it.
+  const stopHeld = t.canStopL && hands.left && t.lOnSince && now - t.lOnSince >= ARM_DELAY_MS;
   if (stopHeld) {
     if (!t.stopSince) t.stopSince = now;
     t.stopLastOn = now;
@@ -2247,7 +2261,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v20 (2026-07-11)");
+  console.log("Queercoded build v21 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
