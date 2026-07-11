@@ -11,14 +11,14 @@ const KEY_LMS = [11, 12, 23, 24]; // shoulders + hips: visibility gate
 const NUM_LMS = 33;
 
 // A gesture starts when real MOTION is detected and ends on stillness or the
-// hands-on-hips rest pose. Motion-based starting (rather than "not in the rest
-// pose") means standing anywhere doing nothing can never start a capture.
+// hand-over-face rest pose. Motion-based starting (rather than "not in the
+// rest pose") means standing anywhere doing nothing can never start a capture.
 const MOVE_EPS = 0.12;            // max-landmark displacement that counts as movement...
 const MOVE_WIN_MS = 250;          // ...measured over this look-back window
 const PREROLL_MS = 300;           // include this much pre-movement history in the capture
 const IDLE_BUF_MS = 800;          // rolling history kept while idle
 const REST_SETTLE_FRAMES = 5;     // frames of "rest" that end a capture
-// Holding still ALSO ends a capture (fallback for marginal hands-on-hips
+// Holding still ALSO ends a capture (fallback for marginal rest-pose
 // detection). "Still" means the FASTEST single landmark barely moved over a
 // short time window. Max-over-landmarks matters: a one-arm gesture moves only
 // a few of the 33 landmarks, so a mean would read as still mid-gesture.
@@ -198,50 +198,59 @@ function keyLandmarksVisible(lms) {
   return KEY_LMS.every((i) => (lms[i]?.visibility ?? 0) > 0.35);
 }
 
-// "Resting" = hands on hips: each wrist sits near its hip. Chosen because it
-// keeps the hands within a close upper-body camera framing (no need to see the
-// legs) and is a distinct, easy-to-hold neutral pose.
+// "Resting" = a hand over the face: either wrist held close to the face.
+// Chosen over hands-on-hips because a close camera framing often crops or
+// barely sees the hips, while the face is always solidly tracked, and it is a
+// distinct pose that a dance movement is unlikely to pass through slowly.
 //
-// The wrist landmark sits above/outside the hip landmark in this pose, so the
-// enter threshold is generous, and hysteresis (looser exit than enter) stops
-// the boundary flicker that was arming phantom captures.
-const REST_ENTER = 0.85;  // wrist-to-hip distance (in shoulder widths) to enter rest
-const REST_EXIT = 1.15;   // distance to leave rest once in it
+// The face anchor averages whichever of nose/ears are still visible, with a
+// LOW visibility gate: the covering hand itself occludes the nose, and a
+// strict gate here would make the rest pose undetectable exactly when held.
+// Hysteresis (looser exit than enter) stops boundary flicker.
+const REST_ENTER = 0.55;  // wrist-to-face distance (in shoulder widths) to enter rest
+const REST_EXIT = 0.8;    // distance to leave rest once in it
+const FACE_LMS = [0, 7, 8]; // nose + ears
 let wasResting = false;
-let restInfo = null;      // per-frame info for drawing the hip target circles
+let restInfo = null;      // per-frame info for drawing the face target circle
 
 function isResting(lms) {
-  const lw = lms[15], rw = lms[16], lh = lms[23], rh = lms[24], ls = lms[11], rs = lms[12];
+  const lw = lms[15], rw = lms[16], ls = lms[11], rs = lms[12];
   restInfo = null;
-  if ((lw?.visibility ?? 0) < 0.35 || (rw?.visibility ?? 0) < 0.35) { wasResting = false; return false; }
-  if ((lh?.visibility ?? 0) < 0.35 || (rh?.visibility ?? 0) < 0.35) { wasResting = false; return false; }
+  const face = FACE_LMS.map((i) => lms[i]).filter((p) => (p?.visibility ?? 0) > 0.2);
+  if (face.length === 0 || (ls?.visibility ?? 0) < 0.35 || (rs?.visibility ?? 0) < 0.35) {
+    wasResting = false;
+    return false;
+  }
+  const anchor = {
+    x: face.reduce((s, p) => s + p.x, 0) / face.length,
+    y: face.reduce((s, p) => s + p.y, 0) / face.length,
+  };
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
-  const dL = Math.hypot(lw.x - lh.x, lw.y - lh.y) / scale;
-  const dR = Math.hypot(rw.x - rh.x, rw.y - rh.y) / scale;
+  const dL = (lw?.visibility ?? 0) > 0.2 ? Math.hypot(lw.x - anchor.x, lw.y - anchor.y) / scale : Infinity;
+  const dR = (rw?.visibility ?? 0) > 0.2 ? Math.hypot(rw.x - anchor.x, rw.y - anchor.y) / scale : Infinity;
+  const d = Math.min(dL, dR);
   const thr = wasResting ? REST_EXIT : REST_ENTER;
-  wasResting = dL < thr && dR < thr;
-  restInfo = { lh, rh, scale, dL, dR };
+  wasResting = d < thr;
+  restInfo = { anchor, scale, d };
   return wasResting;
 }
 
-// Visual guide: circles on the hips that light up when each wrist is close
-// enough to count as "hands on hips". Lets the performer see the target
+// Visual guide: a circle over the face that lights up when a wrist is close
+// enough to count as "hand over face". Lets the performer see the target
 // instead of guessing at an invisible threshold.
 function drawRestTargets() {
   if (!restInfo) return;
-  const { lh, rh, scale, dL, dR } = restInfo;
+  const { anchor, scale, d } = restInfo;
   const r = REST_ENTER * scale * overlay.width * 0.9;
-  for (const [hip, d] of [[lh, dL], [rh, dR]]) {
-    const inRange = d < (wasResting ? REST_EXIT : REST_ENTER);
-    octx.beginPath();
-    octx.arc(hip.x * overlay.width, hip.y * overlay.height, r, 0, Math.PI * 2);
-    octx.strokeStyle = inRange ? "rgba(52,211,153,0.9)" : "rgba(255,255,255,0.5)";
-    octx.lineWidth = inRange ? 4 : 2;
-    octx.stroke();
-    if (inRange) {
-      octx.fillStyle = "rgba(52,211,153,0.15)";
-      octx.fill();
-    }
+  const inRange = d < (wasResting ? REST_EXIT : REST_ENTER);
+  octx.beginPath();
+  octx.arc(anchor.x * overlay.width, anchor.y * overlay.height, r, 0, Math.PI * 2);
+  octx.strokeStyle = inRange ? "rgba(52,211,153,0.9)" : "rgba(255,255,255,0.5)";
+  octx.lineWidth = inRange ? 4 : 2;
+  octx.stroke();
+  if (inRange) {
+    octx.fillStyle = "rgba(52,211,153,0.15)";
+    octx.fill();
   }
 }
 
@@ -385,7 +394,7 @@ function loop() {
         } else {
           segmentStep(vec, restNow, now);
         }
-        // Hip target circles: visible whenever a movement could start or a
+        // Face target circle: visible whenever a movement could start or a
         // rest pose would end one, so the pose threshold is never a guess.
         const capturing = teach ? teach.state === "capturing" && teach.manual : false;
         if (triggerMode === "auto" && !playback && !capturing) drawRestTargets();
@@ -576,7 +585,7 @@ async function startTeach() {
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
   } else {
     recordBtn.textContent = "Cancel";
-    setTeachMsg("Put your hands on your hips, then perform your movement and return to that pose.", "");
+    setTeachMsg("Hold still (or cover your face with one hand), perform your movement, then cover your face or hold still to finish.", "");
   }
 }
 
@@ -591,7 +600,7 @@ function teachStep(vec, rest, now) {
     return;
   }
   if (t.state === "prime") {
-    // Settle first: hands on hips, or simply holding still for a beat.
+    // Settle first: a hand over the face, or simply holding still for a beat.
     pushIdle(t.buf, vec, rest, now);
     const spans = t.buf.length > 1 && now - t.buf[0].t >= STILL_WIN_LONG_MS;
     if (rest || (spans && !isMovingNow(t.buf, now))) t.state = "ready";
@@ -654,14 +663,14 @@ function updateTeachUI(bodyVisible, rest) {
     statusEl.textContent = t.manual
       ? "Recording. Click Stop & save when done."
       : rest
-        ? "Recording. Hold hands on hips to finish…"
-        : "Recording. When your movement is done, hold still and it saves itself.";
+        ? "Recording. Keep your hand over your face to finish…"
+        : "Recording. When your movement is done, hold still or cover your face and it saves itself.";
     return;
   }
   countdownEl.classList.remove("rec");
   if (t.state === "prime") {
     countdownEl.textContent = "REST";
-    statusEl.textContent = "Step 1 of 2: hold still for a moment (hands on hips works too).";
+    statusEl.textContent = "Step 1 of 2: hold still for a moment (a hand over your face works too).";
   } else { // ready
     countdownEl.textContent = "MOVE";
     statusEl.textContent = "Step 2 of 2: perform your movement now, then hold still.";
@@ -699,7 +708,7 @@ function finishTeach(now, timedOut = false) {
   let msg = n > 1
     ? `Saved example ${n} for “${t.word}”. More examples improve recognition.`
     : `Saved “${t.word}”. Switch to Perform to try it.`;
-  if (timedOut) msg += " (Recording hit its time cap; neither stillness nor hands-on-hips was detected to end it.)";
+  if (timedOut) msg += " (Recording hit its time cap; neither stillness nor a hand over your face was detected to end it.)";
   setTeachMsg(msg, "ok");
   wordInput.value = "";
 }

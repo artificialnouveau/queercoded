@@ -69,17 +69,21 @@ remove that:
 Gestures are **motion-delimited**: a capture starts when real movement is
 detected (the fastest landmark travels past a threshold within a short window,
 with a ~300 ms preroll so the start of the movement is kept) and ends on
-**stillness** (~0.5 s of no landmark motion) or on the **hands-on-hips rest
+**stillness** (~0.5 s of no landmark motion) or on the **hand-over-face rest
 pose**. Standing around doing nothing can never start a capture. For anyone who
 prefers explicit control, a **Manual trigger** mode (hold a button or Spacebar)
 captures instead.
 
-`isResting()` is true when each wrist sits near its hip (distance normalized by
-shoulder width), with hysteresis: easier to enter than to leave, which stops
-boundary flicker. The app draws **target circles on the hips** that light up
-when each wrist is close enough, so the threshold is visible rather than
-guessed. Only the upper body (shoulders, hips, wrists) needs to be in frame, so
-close framing and seated use both work.
+`isResting()` is true when either wrist sits near the face (distance normalized
+by shoulder width), with hysteresis: easier to enter than to leave, which stops
+boundary flicker. The face anchor averages whichever of nose/ears are visible,
+with a low visibility gate, because the covering hand itself occludes the nose.
+The face was chosen over the hips because close framings often crop the hips or
+track them weakly, while the face stays solid. The app draws a **target circle
+over the face** that lights up when a wrist is close enough, so the threshold
+is visible rather than guessed. Only the upper body (face, shoulders, wrists,
+and roughly-estimated hips for normalization) needs to be in frame, so close
+framing and seated use both work.
 
 - **Perform:** a small state machine. In `rest`, leaving rest for a couple of
   frames starts a capture. In `move`, returning to rest for a few frames ends
@@ -167,8 +171,8 @@ JSON file is supported for backup and manual sharing today.
 5. **Multiple examples per word:** yes. Record the same word several times; each
    take is stored as an example and the best (nearest) match across a word's
    examples wins. The Codes list groups examples under one word. Implemented.
-6. **Seated / accessibility:** yes. The rest pose is defined relative to the
-   hips (wrists at/below hip height, close to the body), so it works standing or
+6. **Seated / accessibility:** yes. The rest pose (a hand over the face) only
+   needs the head, shoulders, and one wrist in frame, so it works standing or
    seated. A **Manual trigger** mode (hold a button or Spacebar) is provided as a
    fallback for anyone who cannot reliably reach or hold the rest pose.
    Implemented.

@@ -29,10 +29,12 @@ no build step. `app.js` does all the work:
    length, so a code works whether you are near or far from the camera.
 
 3. **Segmentation.** The app watches for real motion to start a capture and
-   ends it when you settle: either holding still, or putting your hands on
-   your hips (the circles drawn on the video). Captures that never really go
-   anywhere (a twitch, tracker jitter) are dropped quietly. The rest at both
-   ends is trimmed so a saved code spans exactly the movement.
+   ends it when you settle: either holding still, or putting a hand over your
+   face (the circle drawn on the video). The face is used because it stays
+   reliably tracked even when a close camera framing crops the lower body.
+   Captures that never really go anywhere (a twitch, tracker jitter) are
+   dropped quietly. The rest at both ends is trimmed so a saved code spans
+   exactly the movement.
 
 4. **Matching.** A captured movement is resampled to a fixed 20 frames and
    compared to every saved code with Dynamic Time Warping, which tolerates
