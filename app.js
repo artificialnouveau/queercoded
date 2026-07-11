@@ -31,6 +31,7 @@ const octx = overlay.getContext("2d");
 const statusEl = document.getElementById("status");
 const bigWord = document.getElementById("bigWord");
 const countdownEl = document.getElementById("countdown");
+const bigStatus = document.getElementById("bigStatus");
 const modelSel = document.getElementById("modelSel");
 
 const threshInput = document.getElementById("thresh");
@@ -281,7 +282,10 @@ async function initPose() {
   const opts = (delegate) => ({
     baseOptions: { modelAssetPath: MODELS[modelChoice].url, delegate },
     runningMode: "VIDEO",
-    numPoses: 1,
+    // Detect a few people, then keep only the most prominent one (see
+    // pickMainPose). This is how background bystanders are ignored: the
+    // performer is nearest the camera, so their skeleton is the largest.
+    numPoses: 3,
   });
   // GPU is faster but silently fails/hangs on some machines; fall back to CPU.
   try {
@@ -324,6 +328,29 @@ async function initCamera() {
   overlay.height = video.videoHeight;
 }
 
+// Of the detected people, return the most prominent one: the nearest, which
+// reads as the largest skeleton (shoulder width + torso length), lightly
+// weighted by how confidently the shoulders are seen. This is what keeps a
+// bystander in the background from stealing the tracking.
+function pickMainPose(poses) {
+  if (!poses || poses.length === 0) return null;
+  if (poses.length === 1) return poses[0];
+  let best = null, bestScore = -Infinity;
+  for (const p of poses) {
+    const ls = p[11], rs = p[12], lh = p[23], rh = p[24];
+    if (!ls || !rs) continue;
+    const shoulder = Math.hypot(ls.x - rs.x, ls.y - rs.y);
+    const shx = (ls.x + rs.x) / 2, shy = (ls.y + rs.y) / 2;
+    const hx = ((lh?.x ?? shx) + (rh?.x ?? shx)) / 2;
+    const hy = ((lh?.y ?? shy) + (rh?.y ?? shy)) / 2;
+    const torso = Math.hypot(shx - hx, shy - hy);
+    const vis = ((ls.visibility ?? 0) + (rs.visibility ?? 0)) / 2;
+    const score = (shoulder + torso) * (0.5 + vis);
+    if (score > bestScore) { bestScore = score; best = p; }
+  }
+  return best || poses[0];
+}
+
 // ---------- Main loop ----------
 function loop() {
   if (landmarker && video.readyState >= 2) {
@@ -332,8 +359,8 @@ function loop() {
     octx.clearRect(0, 0, overlay.width, overlay.height);
 
     let bodyVisible = false, restNow = false;
-    if (res.landmarks && res.landmarks.length > 0) {
-      const lms = res.landmarks[0];
+    const lms = pickMainPose(res.landmarks);
+    if (lms) {
       if (!du) du = new DrawingUtils(octx);
       du.drawConnectors(lms, PoseLandmarker.POSE_CONNECTIONS, { color: "rgba(123,92,255,0.9)", lineWidth: 3 });
       du.drawLandmarks(lms, { color: "#ff4d9d", radius: 3, lineWidth: 1 });
@@ -366,10 +393,19 @@ function loop() {
     }
 
     // While recording, the screen belongs to the movement: hide any matched
-    // word that is still showing.
+    // word and show a big REC. The big SAVED/countdown flashes are left alone
+    // (they only appear when not recording), so this never clobbers them.
     const recording = seg.state === "recording" || manualCapturing ||
       (teach && (teach.manual || teach.state === "capturing"));
-    if (recording) bigWord.classList.remove("show");
+    if (recording) {
+      bigWord.classList.remove("show");
+      if (!bigStatus.classList.contains("rec")) {
+        bigStatus.textContent = "REC";
+        bigStatus.className = "big-status rec show";
+      }
+    } else if (bigStatus.classList.contains("rec")) {
+      bigStatus.className = "big-status";
+    }
 
     // The teach overlay is driven here, EVERY frame, not inside the
     // detection-gated branch. Otherwise losing sight of the body freezes the
@@ -511,6 +547,18 @@ function showBigWord(word) {
   bigWordTimer = setTimeout(() => bigWord.classList.remove("show"), 1200);
 }
 
+// Big centered flash in the video for a transient status word (SAVED, and the
+// 3-2-1 countdown). REC is driven continuously from the loop, not here.
+let bigStatusTimer = null;
+function flashBigStatus(text, cls, ms = 1400) {
+  clearTimeout(bigStatusTimer);
+  bigStatus.textContent = text;
+  bigStatus.className = "big-status show" + (cls ? " " + cls : "");
+  if (ms) bigStatusTimer = setTimeout(() => {
+    if (!bigStatus.classList.contains("rec")) bigStatus.className = "big-status";
+  }, ms);
+}
+
 function renderPhrase() {
   phraseEl.innerHTML = phrase.length === 0
     ? '<span class="muted">Your matched words appear here…</span>'
@@ -524,10 +572,11 @@ async function startTeach() {
   if (teach) return;
 
   recordBtn.disabled = true;
+  statusEl.textContent = "Get ready…";
+  for (let i = 3; i >= 1; i--) { flashBigStatus(i, "count", 0); await sleep(600); }
+  bigStatus.className = "big-status";
   countdownEl.hidden = false;
   countdownEl.classList.remove("rec");
-  statusEl.textContent = "Get ready…";
-  for (let i = 3; i >= 1; i--) { countdownEl.textContent = i; await sleep(600); }
 
   const manual = triggerMode === "manual";
   teach = {
@@ -590,8 +639,8 @@ function updateTeachUI(bodyVisible, rest) {
     return;
   }
   if (t.manual || t.state === "capturing") {
-    countdownEl.textContent = "REC";
-    countdownEl.classList.add("rec");
+    // The big REC overlay covers this state, so keep the pill out of the way.
+    countdownEl.hidden = true;
     statusEl.textContent = t.manual
       ? "Recording. Click Stop & save when done."
       : "Recording. Cover your face with one hand to finish and save.";
@@ -631,6 +680,7 @@ function finishTeach(now, timedOut = false) {
   templates.push({ id: newId(), word: t.word, seq, durMs, createdAt: Date.now() });
   saveTemplates();
   renderCodeList();
+  flashBigStatus("SAVED", "saved");
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
   let msg = n > 1
     ? `Saved example ${n} for “${t.word}”. More examples improve recognition.`
@@ -659,11 +709,21 @@ const GHOST_CX = 0.5;    // horizontal center (image-normalized)
 const GHOST_CY = 0.5;    // vertical hip position
 const GHOST_SCALE = 0.18; // torso length as a fraction of image space
 
+// Play back one or more stored examples as a ghost skeleton. `key` identifies
+// what is playing (a word group, or a single example id) so the matching row
+// can show a Stop button.
+function startPlaybackItems(items, label, key) {
+  if (!items || items.length === 0) return;
+  playback = { items, label, key, idx: 0, t0: performance.now() };
+  renderCodeList();
+}
 function startPlayback(word) {
   const items = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase());
-  if (items.length === 0) return;
-  playback = { word, items, idx: 0, t0: performance.now() };
-  renderCodeList();
+  startPlaybackItems(items, word, "word:" + word.toLowerCase());
+}
+function startPlaybackExample(id) {
+  const t = templates.find((x) => x.id === id);
+  if (t) startPlaybackItems([t], t.word, "ex:" + id);
 }
 
 function stopPlayback() {
@@ -704,7 +764,7 @@ function drawPlayback(now) {
   du.drawLandmarks(ghost, { color: "#ffffff", radius: 4, lineWidth: 1 });
 
   statusEl.textContent =
-    `Playing “${pb.word}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
+    `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
 }
 
 // ---------- Codes list ----------
@@ -735,20 +795,48 @@ function renderCodeList() {
   for (const g of groups.values()) {
     const count = g.items.length;
     const last = Math.max(...g.items.map((t) => t.createdAt));
-    const isPlaying = playback && playback.word.toLowerCase() === g.word.toLowerCase();
+    const wordKey = "word:" + g.word.toLowerCase();
+    const wordPlaying = playback && playback.key === wordKey;
     const w = encodeURIComponent(g.word);
     const li = document.createElement("li");
     li.className = "code-item";
-    li.innerHTML = `
-      <div class="code-info" data-act="play" data-word="${w}" title="Play this movement">
-        <div class="word">${escapeHtml(g.word)}<span class="count">${count} example${count > 1 ? "s" : ""}</span></div>
-        <div class="meta">${new Date(last).toLocaleDateString()} · click to play</div>
-      </div>
-      <div class="row-actions">
-        <button class="btn small ${isPlaying ? "playing" : ""}" data-act="play" data-word="${w}">${isPlaying ? "Stop" : "Play"}</button>
-        <button class="btn small" data-act="rename" data-word="${w}">Rename</button>
-        <button class="btn small danger" data-act="del" data-word="${w}">Delete</button>
+
+    // Header: the word, plus actions on the whole group.
+    const playAllLabel = count > 1 ? "Play all" : "Play";
+    let html = `
+      <div class="code-head">
+        <div class="code-info" data-act="play" data-word="${w}" title="Play this movement">
+          <div class="word">${escapeHtml(g.word)}<span class="count">${count} example${count > 1 ? "s" : ""}</span></div>
+          <div class="meta">${new Date(last).toLocaleDateString()}</div>
+        </div>
+        <div class="row-actions">
+          <button class="btn small ${wordPlaying ? "playing" : ""}" data-act="play" data-word="${w}">${wordPlaying ? "Stop" : playAllLabel}</button>
+          <button class="btn small" data-act="rename" data-word="${w}">Rename</button>
+          <button class="btn small danger" data-act="del" data-word="${w}">Delete</button>
+        </div>
       </div>`;
+
+    // One row per example: play it (dance along with just that take) or delete
+    // only that take. Shown when there is more than one so single-example words
+    // stay compact.
+    if (count > 1) {
+      html += '<ul class="example-list">';
+      g.items.forEach((t, i) => {
+        const exKey = "ex:" + t.id;
+        const exPlaying = playback && playback.key === exKey;
+        html += `
+          <li class="example-row">
+            <span class="ex-name">Example ${i + 1}<span class="ex-date">${new Date(t.createdAt).toLocaleDateString()}</span></span>
+            <span class="row-actions">
+              <button class="btn tiny ${exPlaying ? "playing" : ""}" data-act="play-ex" data-id="${t.id}">${exPlaying ? "Stop" : "Play"}</button>
+              <button class="btn tiny danger" data-act="del-ex" data-id="${t.id}">Delete</button>
+            </span>
+          </li>`;
+      });
+      html += "</ul>";
+    }
+
+    li.innerHTML = html;
     codeList.appendChild(li);
   }
 }
@@ -758,14 +846,27 @@ codeList.addEventListener("click", (e) => {
   if (!btn) return;
   const act = btn.dataset.act;
   const word = decodeURIComponent(btn.dataset.word || "");
+  const id = btn.dataset.id;
   const matches = (t) => t.word.toLowerCase() === word.toLowerCase();
   if (act === "play") {
-    if (playback && playback.word.toLowerCase() === word.toLowerCase()) stopPlayback();
+    if (playback && playback.key === "word:" + word.toLowerCase()) stopPlayback();
     else startPlayback(word);
+  } else if (act === "play-ex") {
+    if (playback && playback.key === "ex:" + id) stopPlayback();
+    else startPlaybackExample(id);
   } else if (act === "del") {
     stopPlayback();
     if (!confirm(`Delete “${word}” and all its examples?`)) return;
     templates = templates.filter((t) => !matches(t));
+    saveTemplates();
+    renderCodeList();
+  } else if (act === "del-ex") {
+    const t = templates.find((x) => x.id === id);
+    if (!t) return;
+    const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
+    if (!confirm(n > 1 ? `Delete this example of “${t.word}”?` : `Delete “${t.word}”? It has only this example.`)) return;
+    stopPlayback();
+    templates = templates.filter((x) => x.id !== id);
     saveTemplates();
     renderCodeList();
   } else if (act === "rename") {

@@ -125,6 +125,42 @@ body {
   pointer-events: none;
 }
 .big-word.show { opacity: 1; transform: translate(-50%, -100%) scale(1); }
+
+/* Big centered status word in the video: the 3-2-1 countdown, REC, and SAVED.
+   Same bold visual language as the trigger words, centered so it reads across
+   the room. */
+.big-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(56px, 16vw, 150px);
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #fff;
+  text-shadow: 0 4px 30px rgba(0,0,0,.8);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s;
+}
+.big-status.show { opacity: 1; }
+.big-status.rec {
+  color: #fff;
+  background: rgba(255,77,157,.16);
+  animation: recPulse 1.1s ease-in-out infinite;
+}
+.big-status.rec::before {
+  content: "";
+  width: .5em; height: .5em;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: .3em;
+  box-shadow: 0 0 24px var(--accent);
+}
+.big-status.saved { color: var(--ok); }
+.big-status.count { color: #fff; }
+@keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .big-word b {
   background: var(--grad);
   -webkit-background-clip: text;
@@ -295,19 +331,30 @@ select {
 
 .code-list { list-style: none; margin: 8px 0; padding: 0; }
 .code-item {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 8px;
 }
+.code-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+}
 .code-item .word { font-weight: 600; }
 .code-item .meta { font-size: 12px; color: var(--muted); }
-.code-item .row-actions { display: flex; gap: 6px; }
+.row-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .code-info { cursor: pointer; }
 .code-info:hover .word { text-decoration: underline; }
+
+.example-list { list-style: none; margin: 10px 0 2px; padding: 8px 0 0; border-top: 1px solid var(--line); }
+.example-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 4px 0;
+}
+.ex-name { font-size: 13px; color: var(--text); }
+.ex-date { color: var(--muted); font-size: 11px; margin-left: 8px; }
+.btn.tiny { padding: 3px 9px; font-size: 12px; }
 .btn.playing { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
 .codes-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .empty { color: var(--muted); font-style: italic; padding: 12px 0; }

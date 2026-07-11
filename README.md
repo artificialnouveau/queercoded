@@ -13,16 +13,19 @@ The whole app is three static files (`index.html`, `style.css`, `app.js`) with
 no build step. `app.js` does all the work:
 
 1. **Pose tracking.** Each video frame goes through a
-   [MediaPipe Pose Landmarker][mp] model running in the browser (WebAssembly,
-   GPU when available). The model returns 33 body landmarks (shoulders, elbows,
-   wrists, hips, knees, and so on) as x/y coordinates plus a visibility score.
-   A picker under the video lets you choose between three model sizes:
+   [MediaPipe Pose Landmarker][mp] model (BlazePose) running in the browser
+   (WebAssembly, GPU when available). The model returns 33 body landmarks
+   (shoulders, elbows, wrists, hips, knees, and so on) as x/y coordinates plus
+   a visibility score. A picker under the video chooses between three model
+   sizes:
    - **Lite**: fastest, but loses track of fast-moving limbs.
    - **Full** (default): the best accuracy/speed balance for dance.
    - **Heavy**: most accurate, but can drop the frame rate on slower machines.
 
    All three output the same 33 landmarks, so codes saved with one model still
-   work after switching. Your choice is remembered in the browser.
+   work after switching. Your choice is remembered in the browser. If several
+   people are in frame, only the nearest (largest) skeleton is tracked, so a
+   bystander in the background does not steal the tracking.
 
 2. **Normalization.** Raw landmarks depend on where you stand and how big you
    appear. Each frame is re-centered on the hip midpoint and scaled by torso
@@ -69,7 +72,9 @@ Any static server works (`npx serve`, etc.). Allow camera access when prompted.
   your face again. When it matches, the word appears above your head and
   joins the phrase strip. Use the sensitivity slider and the live distance
   readout to calibrate.
-- **Codes:** play back, rename, delete, and export/import your codes as JSON.
+- **Codes:** play back a whole word or a single example (dance along with the
+  ghost skeleton), rename, delete a word or just one of its examples, and
+  export/import all codes as JSON.
 
 ### If it says "No clear movement captured"
 
