@@ -1275,9 +1275,32 @@ function startPlaybackItems(items, label, key) {
   playback = { items, label, key, idx: 0, t0: performance.now() };
   renderCodeList();
 }
+// Collapse near-duplicate examples for word playback: takes whose DTW distance
+// is small are averaged frame-wise into ONE ghost, so "Play all" shows the
+// distinct ways a word can be danced instead of replaying near-identical takes.
+const PLAY_SIM_THRESH = 0.12;
+function playbackReps(items) {
+  const groups = [];
+  for (const t of items) {
+    const g = groups.find((g) => dtw(g.base.seq, t.seq) < PLAY_SIM_THRESH);
+    if (g) g.members.push(t); else groups.push({ base: t, members: [t] });
+  }
+  return groups.map((g) => {
+    if (g.members.length === 1) return g.base;
+    const seq = [];
+    for (let f = 0; f < FIXED_LEN; f++) {
+      const v = new Array(NUM_LMS * 2).fill(0);
+      for (const m of g.members) for (let k = 0; k < v.length; k++) v[k] += m.seq[f][k];
+      for (let k = 0; k < v.length; k++) v[k] /= g.members.length;
+      seq.push(v);
+    }
+    const durMs = Math.round(g.members.reduce((s, m) => s + (m.durMs || 2000), 0) / g.members.length);
+    return { ...g.base, seq, durMs };
+  });
+}
 function startPlayback(word) {
   const items = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase());
-  startPlaybackItems(items, word, "word:" + word.toLowerCase());
+  startPlaybackItems(playbackReps(items), word, "word:" + word.toLowerCase());
 }
 function startPlaybackExample(id) {
   const t = templates.find((x) => x.id === id);
@@ -1325,10 +1348,11 @@ function drawPlayback(now) {
   }
 
   // Draw with the bone set of the algorithm the code was taught on. A dark
-  // underlay plus thick strokes keeps the ghost readable over a busy video.
+  // underlay plus thick strokes keeps the ghost readable over a busy video,
+  // and WHITE sets it clearly apart from the live red/yellow skeleton.
   const conns = connectionsForFamily(cur.family || "blaze");
   drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
-  drawSkeleton(ghost, conns, "rgba(236,255,0,0.95)", "#FF002A", 5, 4);
+  drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
 
   statusEl.textContent =
     `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
