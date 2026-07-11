@@ -189,21 +189,37 @@ const handOnFace = {
 // on the face is treated as still there for this long, so a hold does not
 // break just because the hand did its job of covering.
 const UNSEEN_STICKY_MS = 600;
-let restInfo = null;      // per-frame info for drawing the face target circle
+// The covering palm hides the very landmarks that detect it: nose/ears drop
+// out as the hand arrives, which used to stall the countdown for seconds.
+// The face anchor therefore survives brief occlusion (the head does not move
+// while a palm covers it), remembered for up to this long.
+const ANCHOR_STICKY_MS = 1500;
+let lastFaceAnchor = null; // {x, y, at}
+let restInfo = null;       // per-frame info for drawing the face target circle
+
+function clearHandsOnFace() {
+  handOnFace.left.on = handOnFace.right.on = false;
+  handOnFace.left.streak = handOnFace.right.streak = 0;
+  return { left: false, right: false };
+}
 
 function updateHandsOnFace(lms, now) {
   const ls = lms[11], rs = lms[12];
   restInfo = null;
-  const face = FACE_LMS.map((i) => lms[i]).filter((p) => (p?.visibility ?? 0) > 0.2);
-  if (face.length === 0 || (ls?.visibility ?? 0) < 0.35 || (rs?.visibility ?? 0) < 0.35) {
-    handOnFace.left.on = handOnFace.right.on = false;
-    handOnFace.left.streak = handOnFace.right.streak = 0;
-    return { left: false, right: false };
+  if ((ls?.visibility ?? 0) < 0.35 || (rs?.visibility ?? 0) < 0.35) return clearHandsOnFace();
+  const face = FACE_LMS.map((i) => lms[i]).filter((p) => (p?.visibility ?? 0) > 0.15);
+  let anchor;
+  if (face.length > 0) {
+    anchor = {
+      x: face.reduce((s, p) => s + p.x, 0) / face.length,
+      y: face.reduce((s, p) => s + p.y, 0) / face.length,
+    };
+    lastFaceAnchor = { x: anchor.x, y: anchor.y, at: now };
+  } else if (lastFaceAnchor && now - lastFaceAnchor.at < ANCHOR_STICKY_MS) {
+    anchor = lastFaceAnchor; // palm is hiding the face; keep the last known spot
+  } else {
+    return clearHandsOnFace();
   }
-  const anchor = {
-    x: face.reduce((s, p) => s + p.x, 0) / face.length,
-    y: face.reduce((s, p) => s + p.y, 0) / face.length,
-  };
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
   // A wrist counts as "on the face" only when it is both close enough AND
   // roughly under the face centre horizontally. Debounced per hand, and an
@@ -213,7 +229,7 @@ function updateHandsOnFace(lms, now) {
     const rThr = st.on ? REST_EXIT : REST_ENTER;
     const xThr = st.on ? CENTER_X_EXIT : CENTER_X_ENTER;
     let inRange = false, d = Infinity;
-    if ((w?.visibility ?? 0) > 0.2) {
+    if ((w?.visibility ?? 0) > 0.15) {
       st.unseenSince = 0;
       d = Math.hypot(w.x - anchor.x, w.y - anchor.y) / scale;
       const dx = Math.abs(w.x - anchor.x) / scale;
@@ -1852,7 +1868,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queer Coded build v7 (2026-07-11)");
+  console.log("Queer Coded build v8 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
