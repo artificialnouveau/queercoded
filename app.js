@@ -235,19 +235,24 @@ function updateHandsOnFace(lms, now) {
     return clearHandsOnFace();
   }
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
-  // A wrist counts as "on the face" only when it is both close enough AND
-  // roughly under the face centre horizontally. Debounced per hand, and an
-  // unseen wrist stays briefly "on" (leaving the face requires being SEEN
-  // away from it, not just disappearing behind it).
-  const check = (w, st) => {
+  // A wrist counts as "on the face" only when it is close enough, roughly
+  // under the face centre horizontally, AND its forearm points UP (wrist
+  // clearly above its own elbow). A covering palm has a vertical forearm;
+  // crossed arms can put a wrist near the face but with a HORIZONTAL forearm,
+  // which used to false-trigger the recording commands. Debounced per hand,
+  // and an unseen wrist stays briefly "on" (leaving the face requires being
+  // SEEN away from it, not just disappearing behind it).
+  const check = (w, e, st) => {
     const rThr = st.on ? REST_EXIT : REST_ENTER;
     const xThr = st.on ? CENTER_X_EXIT : CENTER_X_ENTER;
+    const upThr = st.on ? 0.08 : 0.2; // (elbow.y - wrist.y) in shoulder widths
     let inRange = false, d = Infinity;
     if ((w?.visibility ?? 0) > 0.15) {
       st.unseenSince = 0;
       d = Math.hypot(w.x - anchor.x, w.y - anchor.y) / scale;
       const dx = Math.abs(w.x - anchor.x) / scale;
-      inRange = d < rThr && dx < xThr;
+      const forearmUp = (e?.visibility ?? 0) <= 0.2 || (e.y - w.y) / scale > upThr;
+      inRange = d < rThr && dx < xThr && forearmUp;
     } else if (st.on) {
       if (!st.unseenSince) st.unseenSince = now;
       inRange = now - st.unseenSince < UNSEEN_STICKY_MS;
@@ -260,8 +265,8 @@ function updateHandsOnFace(lms, now) {
     }
     return d;
   };
-  const dL = check(lms[15], handOnFace.left);
-  const dR = check(lms[16], handOnFace.right);
+  const dL = check(lms[15], lms[13], handOnFace.left);
+  const dR = check(lms[16], lms[14], handOnFace.right);
   restInfo = { anchor, scale, d: Math.min(dL, dR), on: handOnFace.left.on || handOnFace.right.on };
   return { left: handOnFace.left.on, right: handOnFace.right.on };
 }
@@ -2062,7 +2067,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("queercoded build v12 (2026-07-11)");
+  console.log("queercoded build v13 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
