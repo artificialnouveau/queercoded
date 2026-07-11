@@ -355,6 +355,16 @@ select {
 .ex-name { font-size: 13px; color: var(--text); }
 .ex-date { color: var(--muted); font-size: 11px; margin-left: 8px; }
 .btn.tiny { padding: 3px 9px; font-size: 12px; }
+
+.fam {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 6px; margin-left: 4px;
+  vertical-align: middle;
+}
+.fam-blaze { background: rgba(123,92,255,.22); color: #c9bcff; }
+.fam-movenet { background: rgba(52,211,153,.20); color: #7ff0c6; }
+.fam-yolo { background: rgba(255,195,113,.20); color: #ffd39a; }
+.model-note { display: block; margin: 6px 2px 0; font-size: 11px; }
 .btn.playing { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
 .codes-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .empty { color: var(--muted); font-style: italic; padding: 12px 0; }

@@ -36,18 +36,29 @@ webcam ─▶ MediaPipe PoseLandmarker ─▶ 33 landmarks/frame
         └─────────────────────────────────────────────────────────────────┘
 ```
 
-Single-page, no build step. Three files: `index.html`, `style.css`, `app.js`
-(ES module). MediaPipe Tasks-Vision and the pose model load from CDN.
+Single-page, no build step. Files: `index.html`, `style.css`, `app.js`, and
+`backends.js` (ES modules). MediaPipe Tasks-Vision loads from CDN; MoveNet
+(TensorFlow.js) and YOLO-Pose (ONNX Runtime Web) are loaded on demand via
+dynamic `import()` only when selected, so a failure disables just that
+algorithm rather than the whole app.
 
 ---
 
 ## Pose pipeline
 
-- **Model:** user-selectable `pose_landmarker` variant (`lite`, `full`, or
-  `heavy`; default `full`, choice persisted in localStorage). GPU delegate with
-  CPU fallback, `runningMode: VIDEO`, one pose. All variants emit the same 33
-  landmarks per frame, each with `x, y, z, visibility` in normalized image
-  coordinates, so saved codes survive a model switch.
+- **Algorithms:** user-selectable across three families (default
+  `blaze-full`, persisted in localStorage), all normalized to the same 33-slot
+  layout by `backends.js`:
+  - **BlazePose** (MediaPipe): 33 native points, GPU delegate with CPU
+    fallback, `numPoses: 3` then keep the most prominent person.
+  - **MoveNet** (TensorFlow.js): 17 COCO points mapped into the 33 slots.
+  - **YOLO-Pose** (ONNX Runtime Web + WebGPU): 17 COCO points; the app
+    letterboxes the frame to 640x640, runs the session, and decodes the
+    top-confidence detection. Model URL supplied by the user.
+  Because the three disagree on scale, codes are tagged with their family and
+  matched only within it (switching algorithm means re-teaching). The mapped
+  key indices (nose 0, ears 7/8, shoulders 11/12, wrists 15/16, hips 23/24)
+  line up across all families, so rest detection and normalization are shared.
 - **Visibility gate:** we only use a frame when the shoulders (landmarks 11,
   12) have visibility > 0.35. Hips are NOT required to be visible: the model
   estimates their position even out of frame, which is enough for

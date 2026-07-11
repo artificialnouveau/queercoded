@@ -1,8 +1,4 @@
-import {
-  PoseLandmarker,
-  FilesetResolver,
-  DrawingUtils,
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { createBackend, BLAZE_CONNECTIONS, COCO_CONNECTIONS } from "./backends.js";
 
 // ---------- Config ----------
 const STORE_KEY = "queercoded.templates.v1";
@@ -57,14 +53,14 @@ const importFile = document.getElementById("importFile");
 const clearAllBtn = document.getElementById("clearAll");
 
 // ---------- State ----------
-let landmarker = null;
+let backend = null;   // active pose backend (see backends.js)
+let ready = false;    // backend loaded and detecting
 let templates = loadTemplates();
 let teach = null;     // active teaching capture (movement-delimited)
 let seg = newSeg();   // live segmentation state
 let lastFireAt = 0;
 let lastFiredWord = "";
 let phrase = [];
-let du = null;
 
 // Perform options / manual capture
 let triggerMode = "auto";     // "auto" (rest pose) | "manual" (hold)
@@ -258,62 +254,69 @@ function loadTemplates() {
 function saveTemplates() { localStorage.setItem(STORE_KEY, JSON.stringify(templates)); }
 function newId() { return "c_" + Math.random().toString(36).slice(2, 9) + performance.now().toString(36); }
 
-// ---------- MediaPipe ----------
-// All three variants output the same 33 landmarks, so saved codes stay
-// compatible when the user switches. Lite is quick but loses track of fast
-// limbs; Full is the best accuracy/speed balance for dance; Heavy is the most
-// accurate but can drop the frame rate on slower machines.
-const MODEL_BASE = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/";
-const MODELS = {
-  lite:  { label: "MediaPipe BlazePose Lite",  url: MODEL_BASE + "pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
-  full:  { label: "MediaPipe BlazePose Full",  url: MODEL_BASE + "pose_landmarker_full/float16/1/pose_landmarker_full.task" },
-  heavy: { label: "MediaPipe BlazePose Heavy", url: MODEL_BASE + "pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task" },
+// ---------- Pose algorithms ----------
+// Three genuinely different algorithms, all producing the same 33-slot pose
+// (see backends.js). BlazePose keeps 33 native points; MoveNet and YOLO give
+// 17, mapped into the same slots. Codes are tagged with the algorithm FAMILY
+// and only matched within their family, since the three do not agree on scale.
+const ALGOS = {
+  "blaze-lite":       { family: "blaze",   label: "MediaPipe BlazePose Lite" },
+  "blaze-full":       { family: "blaze",   label: "MediaPipe BlazePose Full" },
+  "blaze-heavy":      { family: "blaze",   label: "MediaPipe BlazePose Heavy" },
+  "movenet-lightning":{ family: "movenet", label: "MoveNet Lightning (TF.js)" },
+  "movenet-thunder":  { family: "movenet", label: "MoveNet Thunder (TF.js)" },
+  "yolo":             { family: "yolo",    label: "YOLO-Pose (ONNX Runtime Web)" },
 };
-const MODEL_STORE_KEY = "queercoded.model.v1";
-let modelChoice = localStorage.getItem(MODEL_STORE_KEY);
-if (!MODELS[modelChoice]) modelChoice = "full";
+const ALGO_STORE_KEY = "queercoded.algo.v1";
+const YOLO_URL_KEY = "queercoded.yoloModelUrl";
+let algoChoice = localStorage.getItem(ALGO_STORE_KEY);
+if (!ALGOS[algoChoice]) algoChoice = "blaze-full";
+let currentFamily = ALGOS[algoChoice].family;
 
-let fileset = null; // wasm runtime, fetched once and reused across model swaps
+function connectionsForFamily(fam) { return fam === "blaze" ? BLAZE_CONNECTIONS : COCO_CONNECTIONS; }
 
 async function initPose() {
-  fileset = fileset || await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
-  );
-  const opts = (delegate) => ({
-    baseOptions: { modelAssetPath: MODELS[modelChoice].url, delegate },
-    runningMode: "VIDEO",
-    // Detect a few people, then keep only the most prominent one (see
-    // pickMainPose). This is how background bystanders are ignored: the
-    // performer is nearest the camera, so their skeleton is the largest.
-    numPoses: 3,
-  });
-  // GPU is faster but silently fails/hangs on some machines; fall back to CPU.
-  try {
-    landmarker = await PoseLandmarker.createFromOptions(fileset, opts("GPU"));
-  } catch (e) {
-    console.warn("Pose GPU delegate failed, falling back to CPU:", e);
-    landmarker = await PoseLandmarker.createFromOptions(fileset, opts("CPU"));
-  }
+  backend = createBackend(algoChoice, { yoloModelUrl: localStorage.getItem(YOLO_URL_KEY) || "" });
+  await backend.load();
+  currentFamily = backend.family;
 }
 
-// Swap the pose model at runtime. The main loop skips detection while
-// `landmarker` is null, so the video keeps playing during the download.
-async function switchModel(key) {
-  if (!MODELS[key] || key === modelChoice) return;
-  modelChoice = key;
-  localStorage.setItem(MODEL_STORE_KEY, key);
+// Swap algorithm at runtime. Detection is paused (ready=false) during the
+// load, so the video keeps playing. A failure (bad CDN, missing YOLO model)
+// reverts to the previous algorithm instead of leaving the app dead.
+async function switchAlgo(key) {
+  if (!ALGOS[key] || key === algoChoice) return;
+  // YOLO needs a model file; ask for a URL the first time if none is stored.
+  if (key === "yolo" && !localStorage.getItem(YOLO_URL_KEY)) {
+    const url = prompt(
+      "YOLO-Pose needs a YOLOv8/YOLO11-pose model exported to ONNX (640x640).\n" +
+      "Paste a URL to the .onnx file (CORS-enabled), or Cancel to keep the current algorithm.\n" +
+      "See the README for how to export one.", "");
+    if (!url || !url.trim()) { modelSel.value = algoChoice; return; }
+    localStorage.setItem(YOLO_URL_KEY, url.trim());
+  }
+  const prev = algoChoice;
+  algoChoice = key;
+  localStorage.setItem(ALGO_STORE_KEY, key);
   if (teach) cancelTeach();
   seg = newSeg();
-  const old = landmarker;
-  landmarker = null;
-  try { old?.close(); } catch {}
-  statusEl.textContent = `Loading ${MODELS[key].label} model…`;
+  ready = false;
+  try { backend?.close(); } catch {}
+  backend = null;
+  statusEl.textContent = `Loading ${ALGOS[key].label}…`;
   try {
     await initPose();
+    ready = true;
     setPerformState();
   } catch (e) {
     console.error(e);
-    statusEl.textContent = "Could not load the " + MODELS[key].label + " model: " + e.message;
+    statusEl.textContent = `Could not load ${ALGOS[key].label}: ${e.message}. Reverting.`;
+    // Roll back to the algorithm that was working.
+    algoChoice = prev;
+    localStorage.setItem(ALGO_STORE_KEY, prev);
+    modelSel.value = prev;
+    if (key === "yolo") localStorage.removeItem(YOLO_URL_KEY); // let them re-enter a URL
+    try { await initPose(); ready = true; setPerformState(); } catch (e2) { console.error(e2); }
   }
 }
 
@@ -351,19 +354,55 @@ function pickMainPose(poses) {
   return best || poses[0];
 }
 
+// Draw a skeleton (33-slot pose) with the given bone list. Replaces MediaPipe
+// DrawingUtils so every algorithm draws through one path. Landmarks below a
+// visibility floor are skipped, so 17-point models do not draw phantom bones.
+function drawSkeleton(pose, connections, boneColor, dotColor) {
+  const VIS = 0.3;
+  octx.strokeStyle = boneColor;
+  octx.lineWidth = 3;
+  for (const [i, j] of connections) {
+    const a = pose[i], b = pose[j];
+    if (!a || !b || (a.visibility ?? 1) < VIS || (b.visibility ?? 1) < VIS) continue;
+    octx.beginPath();
+    octx.moveTo(a.x * overlay.width, a.y * overlay.height);
+    octx.lineTo(b.x * overlay.width, b.y * overlay.height);
+    octx.stroke();
+  }
+  octx.fillStyle = dotColor;
+  for (const p of pose) {
+    if (!p || (p.visibility ?? 1) < VIS) continue;
+    octx.beginPath();
+    octx.arc(p.x * overlay.width, p.y * overlay.height, 3, 0, Math.PI * 2);
+    octx.fill();
+  }
+}
+
 // ---------- Main loop ----------
-function loop() {
-  if (landmarker && video.readyState >= 2) {
+// Async because MoveNet and YOLO detect asynchronously; `inflight` keeps frames
+// from overlapping. BlazePose resolves synchronously, so this stays real-time.
+let inflight = false;
+async function loop() {
+  if (ready && backend && !inflight && video.readyState >= 2) {
+    inflight = true;
+    try { await runFrame(); }
+    finally { inflight = false; }
+  }
+  requestAnimationFrame(loop);
+}
+
+async function runFrame() {
+  {
     const now = performance.now();
-    const res = landmarker.detectForVideo(video, now);
+    let poses = [];
+    try { poses = await backend.detect(video, now); }
+    catch (e) { console.warn("detect failed:", e); }
     octx.clearRect(0, 0, overlay.width, overlay.height);
 
     let bodyVisible = false, restNow = false;
-    const lms = pickMainPose(res.landmarks);
+    const lms = pickMainPose(poses);
     if (lms) {
-      if (!du) du = new DrawingUtils(octx);
-      du.drawConnectors(lms, PoseLandmarker.POSE_CONNECTIONS, { color: "rgba(123,92,255,0.9)", lineWidth: 3 });
-      du.drawLandmarks(lms, { color: "#ff4d9d", radius: 3, lineWidth: 1 });
+      drawSkeleton(lms, backend.connections, "rgba(123,92,255,0.9)", "#ff4d9d");
 
       if (keyLandmarksVisible(lms)) {
         bodyVisible = true;
@@ -421,7 +460,6 @@ function loop() {
       finishTeach(now, true);
     }
   }
-  requestAnimationFrame(loop);
 }
 
 // ---------- Hand-over-face bracketed segmentation ----------
@@ -461,11 +499,17 @@ function closeSegment(now) {
 }
 
 function matchAndFire(frames, now) {
-  if (templates.length === 0) { bestWordEl.textContent = "no codes yet"; return; }
+  // Only compare against codes taught with the current algorithm family; the
+  // three algorithms do not agree on scale, so cross-family matching is noise.
+  const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
+  if (pool.length === 0) {
+    bestWordEl.textContent = templates.length ? "no codes for this algorithm" : "no codes yet";
+    return;
+  }
   const live = resampleSeq(frames, FIXED_LEN);
   const thresh = parseFloat(threshInput.value);
   let best = { word: null, dist: Infinity };
-  for (const t of templates) {
+  for (const t of pool) {
     const d = dtw(live, t.seq);
     if (d < best.dist) best = { word: t.word, dist: d };
   }
@@ -481,7 +525,7 @@ function matchAndFire(frames, now) {
 
 // Status text is derived from the live segmentation and trigger state.
 function setPerformState() {
-  if (!landmarker) return;
+  if (!ready) return;
   if (triggerMode === "manual") {
     statusEl.textContent = manualCapturing ? "● capturing movement…" : "● ready. Hold the button to capture.";
     return;
@@ -677,7 +721,7 @@ function finishTeach(now, timedOut = false) {
   }
   const durMs = Math.max(300, Math.round(now - t.startedAt));
   const seq = resampleSeq(core, FIXED_LEN);
-  templates.push({ id: newId(), word: t.word, seq, durMs, createdAt: Date.now() });
+  templates.push({ id: newId(), word: t.word, seq, durMs, family: currentFamily, algo: algoChoice, createdAt: Date.now() });
   saveTemplates();
   renderCodeList();
   flashBigStatus("SAVED", "saved");
@@ -728,7 +772,7 @@ function startPlaybackExample(id) {
 
 function stopPlayback() {
   playback = null;
-  if (landmarker) setPerformState();
+  if (ready) setPerformState();
   renderCodeList();
 }
 
@@ -753,15 +797,14 @@ function drawPlayback(now) {
   for (let k = 0; k < NUM_LMS; k++) {
     const vx = a[k * 2] * (1 - frac) + b[k * 2] * frac;
     const vy = a[k * 2 + 1] * (1 - frac) + b[k * 2 + 1] * frac;
-    ghost.push({ x: GHOST_CX + vx * GHOST_SCALE, y: GHOST_CY + vy * GHOST_SCALE, visibility: 1 });
+    // Slots a 17-point code never filled stay at the origin; mark them
+    // invisible so drawSkeleton skips them instead of drawing to (0,0).
+    const filled = a[k * 2] !== 0 || a[k * 2 + 1] !== 0 || b[k * 2] !== 0 || b[k * 2 + 1] !== 0;
+    ghost.push({ x: GHOST_CX + vx * GHOST_SCALE, y: GHOST_CY + vy * GHOST_SCALE, visibility: filled ? 1 : 0 });
   }
 
-  if (!du) du = new DrawingUtils(octx);
-  du.drawConnectors(ghost, PoseLandmarker.POSE_CONNECTIONS, {
-    color: "rgba(255,195,113,0.95)",
-    lineWidth: 5,
-  });
-  du.drawLandmarks(ghost, { color: "#ffffff", radius: 4, lineWidth: 1 });
+  // Draw with the bone set of the algorithm the code was taught on.
+  drawSkeleton(ghost, connectionsForFamily(cur.family || "blaze"), "rgba(255,195,113,0.95)", "#ffffff");
 
   statusEl.textContent =
     `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
@@ -791,10 +834,13 @@ function renderCodeList() {
     codeList.innerHTML = '<li class="empty">No codes saved yet. Go to Teach to make one.</li>';
     return;
   }
+  const FAM_LABEL = { blaze: "BlazePose", movenet: "MoveNet", yolo: "YOLO" };
   codeList.innerHTML = "";
   for (const g of groups.values()) {
     const count = g.items.length;
     const last = Math.max(...g.items.map((t) => t.createdAt));
+    const fams = [...new Set(g.items.map((t) => t.family || "blaze"))];
+    const famBadge = fams.map((f) => `<span class="fam fam-${f}">${FAM_LABEL[f] || f}</span>`).join("");
     const wordKey = "word:" + g.word.toLowerCase();
     const wordPlaying = playback && playback.key === wordKey;
     const w = encodeURIComponent(g.word);
@@ -807,7 +853,7 @@ function renderCodeList() {
       <div class="code-head">
         <div class="code-info" data-act="play" data-word="${w}" title="Play this movement">
           <div class="word">${escapeHtml(g.word)}<span class="count">${count} example${count > 1 ? "s" : ""}</span></div>
-          <div class="meta">${new Date(last).toLocaleDateString()}</div>
+          <div class="meta">${new Date(last).toLocaleDateString()} ${famBadge}</div>
         </div>
         <div class="row-actions">
           <button class="btn small ${wordPlaying ? "playing" : ""}" data-act="play" data-word="${w}">${wordPlaying ? "Stop" : playAllLabel}</button>
@@ -936,7 +982,7 @@ triggerModeSel.addEventListener("change", () => {
   setPerformState();
 });
 soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
-modelSel.addEventListener("change", () => switchModel(modelSel.value));
+modelSel.addEventListener("change", () => switchAlgo(modelSel.value));
 
 // Hold-to-capture: pointer (mouse/touch)
 holdBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startManual(); });
@@ -966,18 +1012,20 @@ function escapeHtml(s) {
 // ---------- Boot ----------
 (async function boot() {
   threshVal.textContent = threshInput.value;
-  modelSel.value = modelChoice;
+  modelSel.value = algoChoice;
   renderCodeList();
   renderPhrase();
 
   // The pose engine is a ~15 MB first-time download (wasm + model). Kick it off
   // in parallel with the camera permission so the two overlap, and reassure the
   // user it is downloading, not frozen. The browser caches it after first load.
-  let ready = false;
   statusEl.textContent = "Requesting camera + downloading the pose model (first load can take a minute)…";
   const slow = setTimeout(() => {
     if (!ready) statusEl.textContent = "Still downloading the pose engine (first load only). Hang tight…";
   }, 10000);
+
+  // Start the render loop now; it idles until `ready` flips true.
+  loop();
 
   try {
     const cam = initCamera().catch((e) => { throw new Error("camera: " + e.message); });
@@ -987,7 +1035,6 @@ function escapeHtml(s) {
     clearTimeout(slow);
     statusEl.textContent = "Ready.";
     setPerformState();
-    loop();
   } catch (err) {
     clearTimeout(slow);
     console.error(err);

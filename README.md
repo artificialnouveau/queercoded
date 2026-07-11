@@ -12,20 +12,25 @@ browser; only pose **coordinates** are stored, never webcam video.
 The whole app is three static files (`index.html`, `style.css`, `app.js`) with
 no build step. `app.js` does all the work:
 
-1. **Pose tracking.** Each video frame goes through a
-   [MediaPipe Pose Landmarker][mp] model (BlazePose) running in the browser
-   (WebAssembly, GPU when available). The model returns 33 body landmarks
-   (shoulders, elbows, wrists, hips, knees, and so on) as x/y coordinates plus
-   a visibility score. A picker under the video chooses between three model
-   sizes:
-   - **Lite**: fastest, but loses track of fast-moving limbs.
-   - **Full** (default): the best accuracy/speed balance for dance.
-   - **Heavy**: most accurate, but can drop the frame rate on slower machines.
+1. **Pose tracking.** Each video frame goes through a pose-estimation model
+   running entirely in the browser. A picker under the video chooses between
+   three genuinely different algorithms (see `backends.js`):
+   - **MediaPipe BlazePose** (Lite / Full / Heavy): 33 landmarks, the default
+     and the best all-round single-dancer accuracy in the browser. Full is
+     recommended; Heavy is most accurate but heavier; Lite is fastest.
+   - **MoveNet** (Lightning / Thunder, via TensorFlow.js): 17 keypoints,
+     loaded from a CDN. Thunder is more accurate, Lightning faster.
+   - **YOLO-Pose** (via ONNX Runtime Web + WebGPU): 17 keypoints. Needs a
+     model file you supply (see "Adding a YOLO model" below).
 
-   All three output the same 33 landmarks, so codes saved with one model still
-   work after switching. Your choice is remembered in the browser. If several
-   people are in frame, only the nearest (largest) skeleton is tracked, so a
-   bystander in the background does not steal the tracking.
+   Internally every algorithm is mapped to the same 33-slot skeleton, so the
+   rest of the app is identical regardless of choice. Because the three do not
+   agree on scale, **codes are saved per algorithm family**: a code taught with
+   BlazePose is only matched against other BlazePose codes, and switching
+   algorithms means re-teaching. Each code shows a small badge (BlazePose /
+   MoveNet / YOLO) in the Codes list. Your algorithm choice is remembered.
+   If several people are in frame, only the nearest (largest) skeleton is
+   tracked, so a bystander in the background does not steal the tracking.
 
 2. **Normalization.** Raw landmarks depend on where you stand and how big you
    appear. Each frame is re-centered on the hip midpoint and scaled by torso
@@ -63,6 +68,28 @@ python3 -m http.server 8000
 
 Any static server works (`npx serve`, etc.). Allow camera access when prompted.
 
+## Adding a YOLO model
+
+The YOLO-Pose option needs a YOLOv8 or YOLO11 pose model exported to ONNX at
+640x640. There is no universal public URL for one, so you supply it: the first
+time you pick YOLO-Pose, the app prompts for a URL to the `.onnx` file (it must
+be served with permissive CORS, e.g. from the same GitHub Pages repo). To make
+one with [Ultralytics](https://docs.ultralytics.com/):
+
+```bash
+pip install ultralytics
+yolo export model=yolov8n-pose.pt format=onnx imgsz=640
+```
+
+Commit the resulting `yolov8n-pose.onnx` to the repo (note it is several MB) and
+give the app its URL (e.g. `https://<user>.github.io/queercoded/yolov8n-pose.onnx`).
+The URL is remembered in the browser. MoveNet and BlazePose need no setup.
+
+> Note: MoveNet and YOLO-Pose are newer additions and depend on third-party
+> CDN builds (TensorFlow.js, ONNX Runtime Web). BlazePose is the most
+> thoroughly tested path; if an algorithm fails to load, the app reverts to
+> the previous one and keeps running.
+
 ## Use
 
 - **Teach:** name a word, click Record, cover your face with one hand, move
@@ -81,7 +108,7 @@ Any static server works (`npx serve`, etc.). Allow camera access when prompted.
 - Check the skeleton overlay is actually drawn on your body; if not, adjust
   framing so at least your head and shoulders are clearly in view.
 - Make the movement bigger. Very small movements are treated as jitter.
-- Try the Full or Heavy tracking model; Lite can lose fast limbs.
+- Try BlazePose Full or Heavy; Lite (and Lightning) can lose fast limbs.
 - As a fallback, switch Trigger to Manual in the Perform tab and hold the
   button (or Spacebar) while recording.
 

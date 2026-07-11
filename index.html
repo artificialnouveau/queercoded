@@ -30,13 +30,23 @@
         <div id="status" class="status-text" aria-live="polite">Starting…</div>
       </div>
       <div class="model-row">
-        <label for="modelSel">Tracking model</label>
+        <label for="modelSel">Pose algorithm</label>
         <select id="modelSel">
-          <option value="lite">MediaPipe BlazePose Lite (fastest, least accurate)</option>
-          <option value="full">MediaPipe BlazePose Full (recommended for dance)</option>
-          <option value="heavy">MediaPipe BlazePose Heavy (most accurate, needs a fast computer)</option>
+          <optgroup label="MediaPipe BlazePose (33 points)">
+            <option value="blaze-lite">BlazePose Lite (fastest)</option>
+            <option value="blaze-full">BlazePose Full (recommended for dance)</option>
+            <option value="blaze-heavy">BlazePose Heavy (most accurate)</option>
+          </optgroup>
+          <optgroup label="MoveNet / TensorFlow.js (17 points)">
+            <option value="movenet-lightning">MoveNet Lightning (fast)</option>
+            <option value="movenet-thunder">MoveNet Thunder (accurate)</option>
+          </optgroup>
+          <optgroup label="YOLO-Pose / ONNX Runtime Web (17 points)">
+            <option value="yolo">YOLO-Pose (needs a model file)</option>
+          </optgroup>
         </select>
       </div>
+      <small class="model-note muted">Codes are saved per algorithm family: switch algorithms and you re-teach. BlazePose is the only 33-point option and the best all-round accuracy in the browser.</small>
     </section>
 
     <aside class="panel">
