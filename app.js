@@ -942,6 +942,72 @@ function showScore(ranked) {
   return { best, second, thresh };
 }
 
+// ---------- Static-pose matching ----------
+// Striking and HOLDING a pose also counts: after HOLD_MS of stillness in a
+// clearly non-neutral pose, the held pose is compared directly against each
+// code's PEAK pose (its farthest frame from its own start, i.e. the shape of
+// the move). One fire per hold; shifting to a new pose re-arms it. Neutral
+// standing can't fire: the held pose must differ clearly from the learned
+// resting stance.
+const HOLD_MS = 600;
+const HOLD_SHIFT = 0.09;     // pose change (weighted) that counts as a NEW hold
+let stillSince = 0;
+let holdFired = false;
+let holdRefVec = null;
+const tmplPeak = new Map();
+function peakOf(t) {
+  let p = tmplPeak.get(t.id);
+  if (!p) {
+    let m = -1;
+    for (const f of t.seq) {
+      const d = poseDist(f, t.seq[0]);
+      if (d > m) { m = d; p = f; }
+    }
+    tmplPeak.set(t.id, p);
+  }
+  return p;
+}
+function holdStep(vec, now, face) {
+  if (face) { stillSince = 0; holdFired = false; return; }
+  if (!holdRefVec || poseDist(vec, holdRefVec) > HOLD_SHIFT) {
+    holdRefVec = vec.slice(); // pose changed: a fresh hold begins
+    stillSince = now;
+    holdFired = false;
+  }
+  if (holdFired || now - stillSince < HOLD_MS) return;
+  // Neutral standing is not a pose.
+  if (!restPose || poseDist(vec, restPose) < REST_DEV_MIN) {
+    barEl.style.width = "0%";
+    hideClosest();
+    return;
+  }
+  const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
+  if (pool.length === 0) return;
+  const perWord = new Map();
+  for (const t of pool) {
+    const d = poseDist(vec, peakOf(t));
+    const k = t.word.toLowerCase();
+    if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
+  }
+  const ranked = [...perWord.values()].sort((a, b) => a.dist - b.dist);
+  const best = ranked[0], second = ranked[1];
+  const thresh = thresholdFor(best.word);
+  const pct = Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100));
+  bestWordEl.textContent = best.word;
+  matchPctEl.textContent = Math.round(pct) + "%";
+  barEl.style.width = pct + "%";
+  const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
+  if (best.dist < thresh * FIRE_MARGIN && !ambiguous) {
+    const ok = now - lastFireAt > FIRE_GAP_MS
+      && (best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS);
+    if (ok) {
+      console.log(`fire(hold) "${best.word}" dist=${best.dist.toFixed(3)} thresh=${thresh.toFixed(3)}`);
+      holdFired = true; // once per hold; move to a new pose to fire again
+      fireWord(best.word, now);
+    }
+  }
+}
+
 // One Perform frame: track motion, show live feedback, and fire ONLY when a
 // move completes (settles), matched over the whole segment.
 function performStep(vec, now, face) {
@@ -950,8 +1016,13 @@ function performStep(vec, now, face) {
   learnRestPose(vec, sp);
 
   if (!moving) {
-    if (sp > MOVE_START) { moving = true; moveStart = now - SPEED_WIN_MS; lastActive = now; }
-    else { barEl.style.width = "0%"; hideClosest(); }
+    if (sp > MOVE_START) {
+      moving = true; moveStart = now - SPEED_WIN_MS; lastActive = now;
+      stillSince = 0; holdFired = false;
+    } else {
+      // Static-pose matching: striking and HOLDING a pose counts too.
+      holdStep(vec, now, face);
+    }
     return;
   }
 
@@ -987,22 +1058,22 @@ function performStep(vec, now, face) {
     barEl.style.width = "0%"; hideClosest(); return;
   }
   let ranked = scoreSegment(segFrames);
-  // Chained moves: when two poses are performed without a full settle they
-  // merge into one long segment, which scores closest to the FIRST pose and
-  // mislabels the second as a repeat. If the segment runs long, also score
-  // just its tail at typical code length; the better score wins.
+  // Also score the full recent WINDOW at typical code length (stillness
+  // included). This covers two failure modes the bare motion segment cannot:
+  // a code with an internal hold (raise, hold, lower) spans MORE than one
+  // motion segment, and two poses chained without a full settle merge into
+  // one long segment that scores closest to the FIRST pose. The better
+  // interpretation wins.
   const durs = templates
     .filter((t) => (t.family || "blaze") === currentFamily)
     .map((t) => t.durMs || 2000)
     .sort((x, y) => x - y);
   if (durs.length) {
     const medDur = durs[Math.floor(durs.length / 2)];
-    if (lastActive - moveStart > medDur * 1.6) {
-      const tail = framesInRange(lastActive - medDur, lastActive);
-      if (tail.length >= MIN_SEG_FRAMES) {
-        const rankedTail = scoreSegment(tail);
-        if (rankedTail && (!ranked || rankedTail[0].dist < ranked[0].dist)) ranked = rankedTail;
-      }
+    const win = framesInRange(lastActive - medDur, lastActive);
+    if (win.length >= MIN_SEG_FRAMES) {
+      const rankedWin = scoreSegment(win);
+      if (rankedWin && (!ranked || rankedWin[0].dist < ranked[0].dist)) ranked = rankedWin;
     }
   }
   if (!ranked) { barEl.style.width = "0%"; hideClosest(); return; }
@@ -2067,7 +2138,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("queercoded build v13 (2026-07-11)");
+  console.log("queercoded build v14 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
