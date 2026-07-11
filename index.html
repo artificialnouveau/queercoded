@@ -72,7 +72,7 @@
         <label for="orientSel">Layout</label>
         <select id="orientSel">
           <option value="landscape">Landscape</option>
-          <option value="portrait">Vertical</option>
+          <option value="rotated">Vertical (rotated 90)</option>
         </select>
       </div>
     </section>
@@ -91,7 +91,7 @@
         <label class="field">
           <span>Sensitivity <em id="threshVal"></em></span>
           <input id="thresh" type="range" min="0.06" max="0.6" step="0.01" value="0.28" />
-          <small class="muted">A global tightness knob. When a word has several examples the app also auto-calibrates its own threshold from how consistent those examples are; this slider scales that. Left = stricter, right = looser.</small>
+          <small class="muted">Left = stricter, right = looser. Words with several examples auto-calibrate; this scales that.</small>
         </label>
 
         <label class="field">

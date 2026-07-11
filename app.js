@@ -13,8 +13,10 @@ const NUM_LMS = 33;
 // and from the pose) are trimmed off, so a code spans only the gesture itself.
 // After trimming, a capture must have moved some landmark at least MIN_TRAVEL
 // (torso units) or it is dropped as a false start (face covered and uncovered
-// with no gesture in between).
-const MIN_TRAVEL = 0.3;
+// with no gesture in between). Kept LOW: when hands swing out of frame the
+// model's wrist estimates freeze or clamp, so a big real movement can measure
+// as a small one; standing still measures ~0.05, so this still rejects it.
+const MIN_TRAVEL = 0.17;
 const MAX_TEACH_MS = 22000;       // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
 const COOLDOWN_MS = 1200;         // min gap before the same word fires again
@@ -83,6 +85,7 @@ let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
+let ghostPreviewTimer = null; // delayed post-save ghost replay
 // Latest live-body anchor {cx, cy, torso, at}, used to project the playback
 // ghost onto the performer instead of a fixed spot on screen.
 let liveFrame = null;
@@ -263,8 +266,25 @@ function drawRestTargets() {
 // (scale(-1,1)) or the letters would read backwards.
 function drawHandLabel(w, letter, active) {
   if (!w || (w.visibility ?? 0) < 0.3) return;
-  const x = w.x * overlay.width;
-  const y = w.y * overlay.height - 12;
+  let x = w.x * overlay.width;
+  let y = w.y * overlay.height - 12;
+  // Keep the letter clear of the face target circle: when the wrist is at or
+  // near the face, push the label just outside the circle, away from its
+  // centre, so it never covers the target the hand is aiming for.
+  if (restInfo) {
+    const ax = restInfo.anchor.x * overlay.width;
+    const ay = restInfo.anchor.y * overlay.height;
+    const rPx = REST_ENTER * restInfo.scale * overlay.width * 0.9;
+    const dx = x - ax, dy = y - ay;
+    const dist = Math.hypot(dx, dy);
+    const clear = rPx + 30;
+    if (dist < clear) {
+      const ux = dist > 1 ? dx / dist : (letter === "R" ? 1 : -1);
+      const uy = dist > 1 ? dy / dist : 0;
+      x = ax + ux * clear;
+      y = ay + uy * clear;
+    }
+  }
   octx.save();
   octx.translate(x, y);
   octx.scale(-1, 1); // cancel the CSS mirror so the letter reads correctly
@@ -454,10 +474,11 @@ function pickMainPose(poses) {
 // Draw a skeleton (33-slot pose) with the given bone list. Replaces MediaPipe
 // DrawingUtils so every algorithm draws through one path. Landmarks below a
 // visibility floor are skipped, so 17-point models do not draw phantom bones.
-function drawSkeleton(pose, connections, boneColor, dotColor) {
+function drawSkeleton(pose, connections, boneColor, dotColor, boneWidth = 3, dotR = 3) {
   const VIS = 0.3;
   octx.strokeStyle = boneColor;
-  octx.lineWidth = 3;
+  octx.lineWidth = boneWidth;
+  octx.lineCap = "round";
   for (const [i, j] of connections) {
     const a = pose[i], b = pose[j];
     if (!a || !b || (a.visibility ?? 1) < VIS || (b.visibility ?? 1) < VIS) continue;
@@ -470,7 +491,7 @@ function drawSkeleton(pose, connections, boneColor, dotColor) {
   for (const p of pose) {
     if (!p || (p.visibility ?? 1) < VIS) continue;
     octx.beginPath();
-    octx.arc(p.x * overlay.width, p.y * overlay.height, 3, 0, Math.PI * 2);
+    octx.arc(p.x * overlay.width, p.y * overlay.height, dotR, 0, Math.PI * 2);
     octx.fill();
   }
 }
@@ -682,7 +703,10 @@ async function runFrame() {
 // against saved codes. A partial move in progress updates the meter but never
 // fires. When a completed move matches, its label is printed and spoken.
 const PERF_BUF_MS = 8000;         // rolling history kept
-const MIN_ACTIVE_TRAVEL = 0.28;   // a completed move must have travelled this far
+// A completed move must have travelled this far. Matches teach's MIN_TRAVEL
+// reasoning: hands that swing out of frame under-measure, so keep it low; the
+// energy gate and per-word thresholds do the real still-body rejection.
+const MIN_ACTIVE_TRAVEL = 0.18;
 // Motion-boundary detection: a move begins when the fastest landmark's speed
 // (displacement over SPEED_WIN_MS) crosses MOVE_START, and ends once speed has
 // stayed below MOVE_END for SETTLE_MS. Matching (and firing) happens ONLY at
@@ -1058,6 +1082,7 @@ function startTeach() {
   if (teach) return;
 
   stopPlayback(); // clear any preview ghost from a previous save
+  clearTimeout(ghostPreviewTimer); // and any replay still waiting to start
   clearTeachPreview();
   countdownEl.hidden = true;
   bigStatus.className = "big-status";
@@ -1066,7 +1091,7 @@ function startTeach() {
   teach = {
     word, manual,
     state: manual ? "capturing" : "prime", // prime -> starting -> capturing
-    frames: [], near: [], holdSince: 0, canStopL: false, canStopR: false, stopSince: 0,
+    frames: [], near: [], onface: [], holdSince: 0, canStopL: false, canStopR: false, stopSince: 0,
     armed: false, // require the face to be uncovered once before starting
     startedAt: performance.now(),
   };
@@ -1091,7 +1116,7 @@ const HOLD_GRACE_MS = 350;
 // starting hand still resting there can't stop the capture instantly.
 function teachStep(vec, hands, near, now) {
   const t = teach;
-  if (t.manual) { t.frames.push(vec); t.near.push(near); return; }
+  if (t.manual) { t.frames.push(vec); t.near.push(near); t.onface.push(hands.left || hands.right); return; }
   if (t.state === "prime") {          // waiting for a fresh right-hand cover
     if (!hands.right) t.armed = true; // right hand must be off the face first...
     if (t.armed && hands.right) { t.state = "starting"; t.holdSince = now; t.lastOn = now; } // ...then cover
@@ -1102,7 +1127,7 @@ function teachStep(vec, hands, near, now) {
     else if (now - t.lastOn > HOLD_GRACE_MS) { t.state = "prime"; return; }
     if (now - t.holdSince >= START_HOLD_MS) {
       t.state = "capturing";
-      t.frames = [vec]; t.near = [near]; t.startedAt = now;
+      t.frames = [vec]; t.near = [near]; t.onface = [hands.left || hands.right]; t.startedAt = now;
       t.canStopL = false; t.canStopR = false; t.stopSince = 0; t.stopLastOn = 0;
     }
     return;
@@ -1115,6 +1140,7 @@ function teachStep(vec, hands, near, now) {
   // still keeps the starting right hand from stopping the capture instantly.
   t.frames.push(vec);
   t.near.push(near);
+  t.onface.push(hands.left || hands.right);
   if (!hands.left) t.canStopL = true;
   if (!hands.right) t.canStopR = true;
   const stopHeld = (t.canStopL && hands.left) || (t.canStopR && hands.right);
@@ -1164,14 +1190,24 @@ function finishTeach(now, timedOut = false) {
   recordBtn.textContent = "Record movement";
   setPerformState();
 
-  // Trim leading rest and trailing rest/stillness so every code starts and
-  // ends where the movement actually happened.
-  const core = trimNearFace(t.frames, t.near);
+  // Trim the trigger holds off both ends so every code starts and ends where
+  // the movement actually happened. The broad near-face radius catches the
+  // approach and departure, but a dance may legitimately keep a hand near the
+  // face the whole time, which would trim EVERYTHING; when that happens, retry
+  // trimming only the strict hand-on-face frames before giving up.
+  let core = trimNearFace(t.frames, t.near);
+  if (core.length < 3 || travelOf(core) < MIN_TRAVEL) {
+    core = trimNearFace(t.frames, t.onface || []);
+  }
 
   // Same travel gate as segmentation, applied to manual and timed-out
   // recordings too: a capture that never really went anywhere is not a code.
-  if (core.length < 3 || travelOf(core) < MIN_TRAVEL) {
-    setTeachMsg("No clear movement captured. Check the skeleton overlay is tracking you, then try a bigger movement between covering your face.", "warn");
+  if (core.length < 3) {
+    setTeachMsg("The recording ended up too short to save. Give it a beat between starting (R hand) and stopping (L hand), and check the skeleton overlay is tracking you.", "warn");
+    return;
+  }
+  if (travelOf(core) < MIN_TRAVEL) {
+    setTeachMsg("Too little movement was seen between start and stop. Tracking works best when your hands stay inside the frame; step back a little, or make the movement bigger.", "warn");
     return;
   }
   const durMs = Math.max(300, Math.round(now - t.startedAt));
@@ -1183,7 +1219,10 @@ function finishTeach(now, timedOut = false) {
   flashBigStatus("SAVED", "saved");
   flashRiso(now, 900);           // print/glitch the performer as the pose is saved
   showTeachPreview(seq);         // riso pose card of what was just captured
-  startPlaybackExample(tmpl.id); // preview what was just captured, on your body
+  // Ghost replay starts AFTER the SAVED/riso flash has cleared, so it isn't
+  // lost in the noise of the save moment; the ghost is worth watching alone.
+  clearTimeout(ghostPreviewTimer);
+  ghostPreviewTimer = setTimeout(() => startPlaybackExample(tmpl.id), 1500);
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
   let msg = n > 1
     ? `Saved example ${n} for “${t.word}”. Click Record movement to add another, or type a new word.`
@@ -1209,6 +1248,7 @@ function clearTeachPreview() {
 
 function cancelTeach() {
   teach = null;
+  clearTimeout(ghostPreviewTimer);
   countdownEl.hidden = true;
   bigStatus.className = "big-status"; // clear any REC overlay
   recordBtn.disabled = false;
@@ -1231,6 +1271,7 @@ const GHOST_SCALE = 0.18; // torso length as a fraction of image space
 // can show a Stop button.
 function startPlaybackItems(items, label, key) {
   if (!items || items.length === 0) return;
+  clearTimeout(ghostPreviewTimer); // a pending post-save replay must not hijack this
   playback = { items, label, key, idx: 0, t0: performance.now() };
   renderCodeList();
 }
@@ -1283,8 +1324,11 @@ function drawPlayback(now) {
     ghost.push({ x: ax + vx * asc, y: ay + vy * asc, visibility: filled ? 1 : 0 });
   }
 
-  // Draw with the bone set of the algorithm the code was taught on.
-  drawSkeleton(ghost, connectionsForFamily(cur.family || "blaze"), "rgba(236,255,0,0.95)", "#FF002A");
+  // Draw with the bone set of the algorithm the code was taught on. A dark
+  // underlay plus thick strokes keeps the ghost readable over a busy video.
+  const conns = connectionsForFamily(cur.family || "blaze");
+  drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
+  drawSkeleton(ghost, conns, "rgba(236,255,0,0.95)", "#FF002A", 5, 4);
 
   statusEl.textContent =
     `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
@@ -1557,15 +1601,15 @@ triggerModeSel.addEventListener("change", () => {
 });
 soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
 
-// Landscape vs vertical (portrait-cropped) presentation, remembered across
-// visits. Pure CSS: video and overlay share object-fit: cover, so the pose
-// skeleton stays aligned with the cropped image in either orientation.
+// Landscape vs vertical presentation, remembered across visits. Vertical
+// rotates the ENTIRE page 90 degrees clockwise (pure CSS on <body>), for a
+// monitor physically turned on its side.
 const orientSel = document.getElementById("orientSel");
 const ORIENT_KEY = "queercoded.orientation.v1";
 function applyOrientation(mode) {
-  document.querySelector(".layout").classList.toggle("portrait", mode === "portrait");
+  document.body.classList.toggle("rot90", mode === "rotated");
 }
-const savedOrient = localStorage.getItem(ORIENT_KEY) === "portrait" ? "portrait" : "landscape";
+const savedOrient = localStorage.getItem(ORIENT_KEY) === "rotated" ? "rotated" : "landscape";
 orientSel.value = savedOrient;
 applyOrientation(savedOrient);
 orientSel.addEventListener("change", () => {

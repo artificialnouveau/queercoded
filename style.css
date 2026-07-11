@@ -522,19 +522,16 @@ a { color: var(--yellow); }
 .layout.content-full { grid-template-columns: 1fr; }
 .layout.content-full .stage { display: none; }
 
-/* Vertical layout: a portrait-cropped camera (for vertical screens or a
-   phone-style framing) with the panel stacked below. The video and overlay
-   both use object-fit: cover, so the crop stays aligned. */
-.layout.portrait { grid-template-columns: 1fr; }
-.layout.portrait .video-wrap {
-  aspect-ratio: 3 / 4;
-  max-width: min(100%, 66vh);
-  margin: 0 auto;
+/* Vertical: the ENTIRE page rotated 90 degrees clockwise, for a monitor
+   physically turned on its side. The body's width/height swap to the
+   viewport's height/width so the rotated page fills the screen exactly. */
+body.rot90 {
+  position: absolute;
+  top: 0;
+  left: 100vw;
+  width: 100vh;
+  height: 100vw;
+  transform: rotate(90deg);
+  transform-origin: top left;
+  overflow: auto;
 }
-.layout.portrait .status-bar,
-.layout.portrait .model-row {
-  max-width: min(100%, 66vh);
-  margin-left: auto;
-  margin-right: auto;
-}
-.layout.portrait .panel { max-width: 720px; margin: 0 auto; width: 100%; }
