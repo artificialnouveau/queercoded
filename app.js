@@ -26,8 +26,10 @@ const STOP_HOLD_MS = 3000;
 
 // ---------- DOM ----------
 const video = document.getElementById("video");
+const videoWrap = document.querySelector(".video-wrap");
 const overlay = document.getElementById("overlay");
 const octx = overlay.getContext("2d");
+const teachPreview = document.getElementById("teachPreview");
 const statusEl = document.getElementById("status");
 const bigWord = document.getElementById("bigWord");
 const countdownEl = document.getElementById("countdown");
@@ -415,6 +417,102 @@ function drawSkeleton(pose, connections, boneColor, dotColor) {
   }
 }
 
+// ---------- Riso live treatment ----------
+// The vintage red/yellow print + glitch look on the performer. It is ON while a
+// pose is being saved (Teach recording) and FLASHES for a moment when a move is
+// matched (Perform), so the person on screen looks the way a saved/matched pose
+// card looks. Applied to the whole frame (all algorithms), driven every frame
+// from updateCaptureOverlay so it can't get stuck on.
+let risoFlashUntil = 0;
+let risoFlashTimer = null;
+function flashRiso(now, ms = 800) {
+  risoFlashUntil = now + ms;
+  videoWrap.classList.add("flash");
+  clearTimeout(risoFlashTimer);
+  risoFlashTimer = setTimeout(() => videoWrap.classList.remove("flash"), ms);
+}
+
+// ---------- Saved-pose figures ----------
+// Render the stored skeleton coordinates as riso silhouette figures (a red body
+// with a yellow offset, like the printed pose cards). Nothing but coordinates is
+// used, so no webcam image is ever stored or drawn. Slots shared by every
+// algorithm family (BlazePose 33 and the COCO-17 mapping) so figures draw the
+// same regardless of which model taught the code.
+const FIG_BONES = [
+  [11, 13], [13, 15], [12, 14], [14, 16], // arms
+  [23, 25], [25, 27], [24, 26], [26, 28], // legs
+  [11, 12], [23, 24], [11, 23], [12, 24], // shoulders, hips, sides
+];
+function figPoint(frame, i, cx, cy, sc) {
+  const x = frame[i * 2], y = frame[i * 2 + 1];
+  // A landmark a 17-point code never filled stays exactly at the origin.
+  const filled = x !== 0 || y !== 0;
+  // Mirror x so the figure faces the same way as the mirrored live video.
+  return { x: cx - x * sc, y: cy + y * sc, v: filled };
+}
+function paintFigure(ctx, frame, cx, cy, sc, s, color) {
+  const P = (i) => figPoint(frame, i, cx, cy, sc);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = s * 0.15;
+  // Torso as a filled quad so the body reads as a solid silhouette.
+  const torso = [P(11), P(12), P(24), P(23)].filter((p) => p.v);
+  if (torso.length >= 3) {
+    ctx.beginPath();
+    ctx.moveTo(torso[0].x, torso[0].y);
+    for (const p of torso.slice(1)) ctx.lineTo(p.x, p.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Limbs as thick round-capped strokes.
+  ctx.beginPath();
+  for (const [a, b] of FIG_BONES) {
+    const A = P(a), B = P(b);
+    if (!A.v || !B.v) continue;
+    ctx.moveTo(A.x, A.y);
+    ctx.lineTo(B.x, B.y);
+  }
+  ctx.stroke();
+  // Head: a disc at the nose, or just above the shoulders if the nose is unseen.
+  const nose = P(0), ls = P(11), rs = P(12);
+  const hx = nose.v ? nose.x : (ls.x + rs.x) / 2;
+  const hy = nose.v ? nose.y : (ls.y + rs.y) / 2 - s * 0.14;
+  ctx.beginPath();
+  ctx.arc(hx, hy, s * 0.12, 0, Math.PI * 2);
+  ctx.fill();
+}
+function drawFigureCell(ctx, frame, x0, s) {
+  const cx = x0 + s * 0.5;
+  const cy = s * 0.52;     // hips near centre so legs and raised arms both fit
+  const sc = s * 0.18;     // torso length in px
+  const off = s * 0.05;    // yellow print offset
+  // Yellow layer first (offset), then red on top: the riso registration look.
+  ctx.save();
+  ctx.translate(off, off * 0.7);
+  paintFigure(ctx, frame, cx, cy, sc, s, "#ECFF00");
+  ctx.restore();
+  paintFigure(ctx, frame, cx, cy, sc, s, "#FF002A");
+}
+// A row of `count` evenly-spaced frames from a stored seq, as one canvas.
+function buildPoseStrip(seq, { count = 3, size = 74 } = {}) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "pose-strip";
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = size * count * dpr;
+  canvas.height = size * dpr;
+  canvas.style.width = size * count + "px";
+  canvas.style.height = size + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  for (let n = 0; n < count; n++) {
+    const idx = count === 1 ? 0 : Math.round((n * (seq.length - 1)) / (count - 1));
+    drawFigureCell(ctx, seq[idx], n * size, size);
+  }
+  return canvas;
+}
+
 // ---------- Main loop ----------
 // Async because MoveNet and YOLO detect asynchronously; `inflight` keeps frames
 // from overlapping. Detection is throttled to ~30fps, which is plenty for
@@ -706,6 +804,7 @@ function fireWord(word, now) {
   lastFireAt = now;
   lastFiredWord = word;
   showBigWord(word);
+  flashRiso(now);
   ping();
   speak(word);
   phrase.push(word);
@@ -805,6 +904,10 @@ function updateCaptureOverlay(now) {
     bigStatus.className = "big-status"; // leave SAVED flashes alone
   }
 
+  // Riso treatment: on while actually recording a pose, plus a short window
+  // after a match/save. Driven here every frame so it can never stick on.
+  videoWrap.classList.toggle("riso", kind === "rec" || now < risoFlashUntil);
+
   if (!ready || !teach) return; // Perform manages its own status line
   if (kind === "start") statusEl.textContent = `Keep your face covered… recording in ${secs}`;
   else if (kind === "stop") statusEl.textContent = `Hold… saving in ${secs}`;
@@ -823,6 +926,7 @@ function startTeach() {
   if (teach) return;
 
   stopPlayback(); // clear any preview ghost from a previous save
+  clearTeachPreview();
   countdownEl.hidden = true;
   bigStatus.className = "big-status";
 
@@ -935,6 +1039,8 @@ function finishTeach(now, timedOut = false) {
   saveTemplates();
   renderCodeList();
   flashBigStatus("SAVED", "saved");
+  flashRiso(now, 900);           // print/glitch the performer as the pose is saved
+  showTeachPreview(seq);         // riso pose card of what was just captured
   startPlaybackExample(tmpl.id); // preview what was just captured, on your body
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
   let msg = n > 1
@@ -944,6 +1050,19 @@ function finishTeach(now, timedOut = false) {
   setTeachMsg(msg, "ok");
   // Keep the word so the next Record adds another example; select it for easy edit.
   wordInput.select();
+}
+
+// Show a riso pose card of the movement just saved, in the Teach panel.
+function showTeachPreview(seq) {
+  if (!teachPreview) return;
+  teachPreview.innerHTML = '<div class="teach-preview-label">Saved as a pose card:</div>';
+  try { teachPreview.appendChild(buildPoseStrip(seq, { count: 3, size: 84 })); } catch {}
+  teachPreview.hidden = false;
+}
+function clearTeachPreview() {
+  if (!teachPreview) return;
+  teachPreview.hidden = true;
+  teachPreview.innerHTML = "";
 }
 
 function cancelTeach() {
@@ -1103,6 +1222,9 @@ function renderCodeList() {
     }
 
     li.innerHTML = html;
+    // A riso pose strip for the group, drawn from its most recent example.
+    const rep = g.items.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+    try { li.insertBefore(buildPoseStrip(rep.seq), li.firstChild); } catch {}
     codeList.appendChild(li);
   }
 }

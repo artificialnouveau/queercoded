@@ -7,6 +7,22 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
+       posterized for a print-like banding). Applied to the live video via
+       CSS filter:url(#riso) while a pose is being saved or matched. -->
+  <svg class="svg-defs" aria-hidden="true" focusable="false" width="0" height="0">
+    <defs>
+      <filter id="riso" color-interpolation-filters="sRGB">
+        <feColorMatrix type="saturate" values="0" />
+        <feComponentTransfer>
+          <feFuncR type="discrete" tableValues="1 0.98 0.955 0.925" />
+          <feFuncG type="discrete" tableValues="0 0.42 0.75 0.98" />
+          <feFuncB type="discrete" tableValues="0.11 0.07 0.03 0" />
+        </feComponentTransfer>
+      </filter>
+    </defs>
+  </svg>
+
   <header class="topbar">
     <h1 class="logo" aria-label="Queer Coded"><span aria-hidden="true"><i style="color:#E40303">Q</i><i style="color:#FF8C00">u</i><i style="color:#FFED00">e</i><i style="color:#008026">e</i><i style="color:#004DFF">r</i><i class="sp"> </i><i style="color:#750787">C</i><i style="color:#E40303">o</i><i style="color:#FF8C00">d</i><i style="color:#008026">e</i><i style="color:#004DFF">d</i></span></h1>
     <p class="tagline">Code a movement. Move to speak.</p>
@@ -23,6 +39,7 @@
     <section class="stage">
       <div class="video-wrap">
         <video id="video" playsinline muted></video>
+        <div id="grain" class="grain" aria-hidden="true"></div>
         <canvas id="overlay"></canvas>
         <div id="bigWord" class="big-word" aria-live="polite"></div>
         <div id="bigStatus" class="big-status" aria-live="assertive"></div>
@@ -121,6 +138,7 @@
 
         <button id="recordBtn" class="btn primary block">Record movement</button>
         <p id="teachMsg" class="teach-msg muted"></p>
+        <div id="teachPreview" class="pose-strip-wrap" hidden></div>
       </div>
 
       <!-- CODES -->

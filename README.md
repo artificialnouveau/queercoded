@@ -60,6 +60,14 @@ no build step. `app.js` does all the work:
    skeleton frames). They can be exported/imported as JSON files, replayed as
    a "ghost" skeleton over the live video, renamed, and deleted.
 
+6. **Riso look.** While a pose is being saved (Teach recording), and for a
+   moment whenever a movement is matched (Perform), the performer is rendered in
+   a red/yellow duotone with film grain and a brief chromatic glitch, so the
+   live body looks the way a saved pose does. Each saved code also shows a small
+   "pose card": a triptych of red-with-yellow-offset silhouette figures drawn
+   from the stored skeleton frames (coordinates only, never a webcam image), in
+   the Codes list and as a preview right after teaching.
+
 ## Run locally
 
 The camera needs a secure context, so serve over `localhost` (opening the file

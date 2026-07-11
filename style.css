@@ -107,7 +107,46 @@ body {
   object-fit: cover;
   transform: scaleX(-1); /* mirror */
 }
-#video { object-fit: cover; }
+#video { object-fit: cover; transition: filter .18s ease; }
+
+/* Riso / vintage-print treatment on the performer. Turned on (class .riso on
+   .video-wrap) while a pose is being saved (Teach recording) and flashed for a
+   moment when a move is matched (Perform). The duotone itself is the #riso SVG
+   filter; grain and the glitch offset live here. */
+.video-wrap.riso #video { filter: url(#riso) contrast(1.12) brightness(1.04); }
+
+/* Film grain, only visible while the riso treatment is on. Animated in coarse
+   steps so it flickers like a print run rather than sliding smoothly. */
+.grain {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  opacity: 0;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  transform: scaleX(-1);
+  transition: opacity .18s ease;
+}
+.video-wrap.riso .grain { opacity: .32; animation: grainShift .5s steps(3) infinite; }
+@keyframes grainShift {
+  0% { background-position: 0 0; }
+  33% { background-position: -60px 30px; }
+  66% { background-position: 40px -50px; }
+  100% { background-position: 0 0; }
+}
+
+/* Glitch: a brief chromatic split + jitter on a fresh save or a match. */
+.video-wrap.riso.flash #video {
+  animation: risoGlitch .5s steps(2) 1;
+}
+@keyframes risoGlitch {
+  0% { filter: url(#riso) contrast(1.12) brightness(1.04) drop-shadow(3px 0 0 #FF001C) drop-shadow(-3px 0 0 #ECFF00); transform: scaleX(-1) translateX(0); }
+  25% { transform: scaleX(-1) translateX(4px); }
+  50% { filter: url(#riso) contrast(1.2) brightness(1.06) drop-shadow(-4px 0 0 #ECFF00) drop-shadow(4px 0 0 #FF001C); transform: scaleX(-1) translateX(-4px); }
+  75% { transform: scaleX(-1) translateX(2px); }
+  100% { filter: url(#riso) contrast(1.12) brightness(1.04); transform: scaleX(-1) translateX(0); }
+}
 
 /* Matched word, anchored just above the tracked head (left/top set from JS
    every frame; translate lifts the text fully above the anchor point). */
@@ -395,7 +434,23 @@ input:focus-visible,
 @media (prefers-reduced-motion: reduce) {
   .big-status.rec, .pill.rec { animation: none; }
   .big-word, .big-status, .bar-fill { transition: none; }
+  .video-wrap.riso .grain { animation: none; }
+  .video-wrap.riso.flash #video { animation: none; }
 }
+
+/* Saved-pose figures: a small riso triptych rendered from the stored skeleton
+   coordinates (no webcam image is kept), echoing the printed pose cards. */
+.pose-strip-wrap { margin-top: 10px; }
+.pose-strip-wrap[hidden] { display: none; }
+.pose-strip {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  image-rendering: auto;
+  border-radius: 8px;
+}
+.code-item .pose-strip { margin: 2px 0 10px; }
+.teach-preview-label { font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
 .btn.playing { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
 .codes-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
