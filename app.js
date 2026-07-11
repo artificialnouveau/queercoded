@@ -150,8 +150,15 @@ function keyLandmarksVisible(lms) {
 // LOW visibility gate: the covering hand itself occludes the nose, and a
 // strict gate here would make the rest pose undetectable exactly when held.
 // Hysteresis (looser exit than enter) stops boundary flicker.
-const REST_ENTER = 0.55;  // wrist-to-face distance (in shoulder widths) to enter rest
-const REST_EXIT = 0.8;    // distance to leave rest once in it
+const REST_ENTER = 0.5;   // wrist-to-face distance (in shoulder widths) to enter rest
+const REST_EXIT = 0.72;   // distance to leave rest once in it
+// Horizontal-centering gate. The pose tracks the WRIST, which sits below the
+// face when the palm covers it, so the radius alone can't tell "palm over face"
+// from "hand beside the face" (both put a wrist within range). A covering hand's
+// wrist is roughly under the face centre; a hand at the side is offset sideways.
+// So the wrist must also be within this horizontal distance of the face centre.
+const CENTER_X_ENTER = 0.4; // |wrist.x - face.x| in shoulder widths to enter
+const CENTER_X_EXIT = 0.55; // and to stay (hysteresis)
 const FACE_LMS = [0, 7, 8]; // nose + ears
 // The trip to and from the face is not part of the gesture. Frames at either
 // end of a capture where a wrist is within this radius of the face are
@@ -178,18 +185,26 @@ function isResting(lms) {
     y: face.reduce((s, p) => s + p.y, 0) / face.length,
   };
   const scale = Math.hypot(ls.x - rs.x, ls.y - rs.y) || 1e-6; // shoulder width
-  const dL = (lw?.visibility ?? 0) > 0.2 ? Math.hypot(lw.x - anchor.x, lw.y - anchor.y) / scale : Infinity;
-  const dR = (rw?.visibility ?? 0) > 0.2 ? Math.hypot(rw.x - anchor.x, rw.y - anchor.y) / scale : Infinity;
-  const d = Math.min(dL, dR);
-  const thr = wasResting ? REST_EXIT : REST_ENTER;
-  const inRange = d < thr;
+  const rThr = wasResting ? REST_EXIT : REST_ENTER;
+  const xThr = wasResting ? CENTER_X_EXIT : CENTER_X_ENTER;
+  // A wrist counts as "on the face" only when it is both close enough AND
+  // roughly under the face centre horizontally.
+  const onFace = (w) => {
+    if ((w?.visibility ?? 0) <= 0.2) return { on: false, d: Infinity };
+    const d = Math.hypot(w.x - anchor.x, w.y - anchor.y) / scale;
+    const dx = Math.abs(w.x - anchor.x) / scale;
+    return { on: d < rThr && dx < xThr, d };
+  };
+  const L = onFace(lw), R = onFace(rw);
+  const d = Math.min(L.d, R.d);
+  const inRange = L.on || R.on;
   if (inRange !== wasResting) {
     restStreak++;
     if (restStreak >= REST_DEBOUNCE) { wasResting = inRange; restStreak = 0; }
   } else {
     restStreak = 0;
   }
-  restInfo = { anchor, scale, d };
+  restInfo = { anchor, scale, d, on: inRange };
   return wasResting;
 }
 
@@ -204,9 +219,9 @@ function isNearFace() {
 // instead of guessing at an invisible threshold.
 function drawRestTargets() {
   if (!restInfo) return;
-  const { anchor, scale, d } = restInfo;
+  const { anchor, scale, on } = restInfo;
   const r = REST_ENTER * scale * overlay.width * 0.9;
-  const inRange = d < (wasResting ? REST_EXIT : REST_ENTER);
+  const inRange = on;
   octx.beginPath();
   octx.arc(anchor.x * overlay.width, anchor.y * overlay.height, r, 0, Math.PI * 2);
   octx.strokeStyle = inRange ? "rgba(52,211,153,0.9)" : "rgba(255,255,255,0.5)";
@@ -456,8 +471,12 @@ async function runFrame() {
     // While recording, the screen belongs to the movement: hide any matched
     // word and show a big REC. The big SAVED/countdown flashes are left alone
     // (they only appear when not recording), so this never clobbers them.
-    const recording = seg.state === "recording" || manualCapturing ||
-      (teach && (teach.manual || teach.state === "capturing"));
+    // Mode-aware: while teaching, only the teach state counts (a half-finished
+    // Perform capture in `seg` must not light REC); while performing, teach is
+    // null so `seg` drives it.
+    const recording = teach
+      ? (teach.manual || teach.state === "capturing")
+      : (manualCapturing || seg.state === "recording");
     if (recording) {
       bigWord.classList.remove("show");
       if (!bigStatus.classList.contains("rec")) {
@@ -701,6 +720,7 @@ async function startTeach() {
   if (!word) { setTeachMsg("Type a word or phrase first.", "warn"); return; }
   if (teach) return;
 
+  seg = newSeg(); // drop any half-finished Perform capture so it can't drive REC
   recordBtn.disabled = true;
   statusEl.textContent = "Get ready…";
   for (let i = 3; i >= 1; i--) { flashBigStatus(i, "count", 0); await sleep(600); }
@@ -1082,6 +1102,11 @@ function activateTab(tab, focus = false) {
     t.tabIndex = on ? 0 : -1;
   }
   document.querySelectorAll(".tabpane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
+  // Leaving a tab abandons any in-progress capture, so switching never carries
+  // a stale "recording" state (and its REC overlay) into another tab.
+  seg = newSeg();
+  manualCapturing = false;
+  if (ready) setPerformState();
   if (focus) tab.focus();
 }
 tabs.forEach((tab) => {

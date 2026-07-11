@@ -88,8 +88,11 @@ prefers explicit control, a **Manual trigger** mode (hold a button or Spacebar)
 captures instead.
 
 `isResting()` is true when either wrist sits near the face (distance normalized
-by shoulder width), with hysteresis: easier to enter than to leave, which stops
-boundary flicker. The face anchor averages whichever of nose/ears are visible,
+by shoulder width) AND is roughly under the face centre horizontally. The
+horizontal-centring gate exists because the pose tracks the wrist, which sits
+below the face when the palm covers it, so a radius alone cannot distinguish a
+palm over the face from a hand beside it. Both conditions use hysteresis (easier
+to enter than to leave) to stop boundary flicker. The face anchor averages whichever of nose/ears are visible,
 with a low visibility gate, because the covering hand itself occludes the nose.
 The face was chosen over the hips because close framings often crop the hips or
 track them weakly, while the face stays solid. The app draws a **target circle
