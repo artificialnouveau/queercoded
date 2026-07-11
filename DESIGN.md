@@ -1,4 +1,4 @@
-# Queer Coded — Design
+# queercoded: Design
 
 A browser app that turns body movement into language. Using a webcam and
 MediaPipe pose tracking, you can **teach** the app a movement (a static pose or
@@ -165,7 +165,7 @@ JSON file is supported for backup and manual sharing today.
   animates large over the video; a phrase strip collects matched words.
 - **Look:** bathroom-tile background (white ceramic tiles + grout), with the
   app content as dark, floating cards. Rainbow gradient wordmark. The bathroom
-  motif nods to queer space; "Queer Coded" as the title.
+  motif nods to queer space; "queercoded" as the title.
 
 ---
 
