@@ -15,6 +15,7 @@
       <button class="tab" data-tab="perform" role="tab" id="tab-perform" aria-controls="pane-perform" aria-selected="false" tabindex="-1">Perform</button>
       <button class="tab" data-tab="codes" role="tab" id="tab-codes" aria-controls="pane-codes" aria-selected="false" tabindex="-1">Codes</button>
       <button class="tab" data-tab="about" role="tab" id="tab-about" aria-controls="pane-about" aria-selected="false" tabindex="-1">About</button>
+      <button class="tab" data-tab="algodance" role="tab" id="tab-algodance" aria-controls="pane-algodance" aria-selected="false" tabindex="-1">AlgoDance</button>
     </nav>
   </header>
 
@@ -96,11 +97,11 @@
       <div class="tabpane" data-pane="teach" id="pane-teach" role="tabpanel" aria-labelledby="tab-teach">
         <h2>Teach a new code</h2>
         <ol class="steps muted">
-          <li>Type the word or phrase this movement will mean, then click <b>Record movement</b>.</li>
-          <li>Cover your face with one hand and hold it there for the 3-second countdown. Recording starts at zero.</li>
-          <li>Move your hand away, perform your movement, then cover your face and hold again to stop. It saves by itself.</li>
+          <li>Type the word or phrase this movement will mean, then click <b>Record movement</b>. Recording starts right away.</li>
+          <li>Perform your movement.</li>
+          <li>Cover your face with one hand and hold for the 3-second countdown to stop and save.</li>
         </ol>
-        <p class="muted">The hand-to-face moments are trimmed automatically, so only the movement in between is saved. Record the same word more than once to add examples and make it easier to recognize.</p>
+        <p class="muted">The hold-to-save moment is trimmed automatically, so only your movement is saved. Record the same word more than once to add examples and make it easier to recognize.</p>
 
         <label class="field">
           <span>Word or phrase</span>
@@ -142,6 +143,20 @@
 
         <h3>How it works</h3>
         <p class="muted">Pose tracking runs in the browser (WebAssembly / WebGPU). Movements are compared with Dynamic Time Warping so tempo does not matter, and matching happens entirely on your device.</p>
+
+        <h3>AlgoDance</h3>
+        <p class="muted">Read the AlgoDance document: <a href="AlgoDance.pdf" target="_blank" rel="noopener">open the PDF</a>, or see the <b>AlgoDance</b> tab.</p>
+      </div>
+
+      <!-- ALGODANCE -->
+      <div class="tabpane" data-pane="algodance" id="pane-algodance" role="tabpanel" aria-labelledby="tab-algodance" hidden>
+        <h2>AlgoDance</h2>
+        <p class="muted">The AlgoDance reference document. It reads best full-width, so open it in a new tab.</p>
+        <p class="pdf-actions">
+          <a class="btn small" href="AlgoDance.pdf" target="_blank" rel="noopener">Open in new tab</a>
+          <a class="btn small ghost" href="AlgoDance.pdf" download>Download PDF</a>
+        </p>
+        <iframe class="pdf-frame" src="AlgoDance.pdf" title="AlgoDance document"></iframe>
       </div>
     </aside>
   </main>

@@ -19,10 +19,8 @@ const MAX_SEG_MS = 20000;         // abandon a capture that never returns to the
 const MAX_TEACH_MS = 22000;       // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
 const COOLDOWN_MS = 1200;         // min gap before the same word fires again
-// Both ends of a capture are deliberate holds with a visible 3-2-1 countdown:
-// hold face+hand this long to START recording, and again to STOP it. A brief
-// brush of the face therefore does nothing.
-const START_HOLD_MS = 3000;
+// Teaching stops when the face is covered and held for a visible 3-2-1
+// countdown, so a brief brush of the face does nothing.
 const STOP_HOLD_MS = 3000;
 
 // ---------- DOM ----------
@@ -728,26 +726,26 @@ function flashBigStatus(text, cls, ms = 1400) {
 // Only Teach records, so the big REC / 3-2-1 countdown overlay is Teach-only.
 // Perform is continuous and shows no recording overlay.
 function updateCaptureOverlay(now) {
-  const remain = (since, span) => Math.max(1, Math.ceil((span - (now - since)) / 1000));
   let kind = null, secs = 0;
   if (teach && teach.manual) kind = "rec";
-  else if (teach && teach.state === "starting") { kind = "start"; secs = remain(teach.holdSince, START_HOLD_MS); }
-  else if (teach && teach.state === "capturing") kind = teach.stopSince ? (secs = remain(teach.stopSince, STOP_HOLD_MS), "stop") : "rec";
+  else if (teach && teach.state === "capturing") {
+    if (teach.stopSince) { kind = "stop"; secs = Math.max(1, Math.ceil((STOP_HOLD_MS - (now - teach.stopSince)) / 1000)); }
+    else kind = "rec";
+  }
 
   if (kind === "rec") {
     bigWord.classList.remove("show");
     if (!bigStatus.classList.contains("rec")) { bigStatus.textContent = "REC"; bigStatus.className = "big-status rec show"; }
-  } else if (kind === "start" || kind === "stop") {
+  } else if (kind === "stop") {
     bigWord.classList.remove("show");
     bigStatus.textContent = secs;
-    bigStatus.className = "big-status show " + (kind === "stop" ? "stop" : "count");
-  } else if (bigStatus.classList.contains("rec") || bigStatus.classList.contains("count") || bigStatus.classList.contains("stop")) {
+    bigStatus.className = "big-status show stop";
+  } else if (bigStatus.classList.contains("rec") || bigStatus.classList.contains("stop")) {
     bigStatus.className = "big-status"; // leave SAVED flashes alone
   }
 
   if (!ready || !teach) return; // Perform manages its own status line
-  if (kind === "start") statusEl.textContent = `Keep your face covered… recording in ${secs}`;
-  else if (kind === "stop") statusEl.textContent = `Hold… stopping in ${secs}`;
+  if (kind === "stop") statusEl.textContent = `Hold… saving in ${secs}`;
 }
 
 function renderPhrase() {
@@ -757,20 +755,20 @@ function renderPhrase() {
 }
 
 // ---------- Teaching (movement-delimited, like Perform) ----------
-async function startTeach() {
+function startTeach() {
   const word = wordInput.value.trim();
   if (!word) { setTeachMsg("Type a word or phrase first.", "warn"); return; }
   if (teach) return;
 
-  seg = newSeg(); // drop any half-finished Perform capture so it can't drive REC
   countdownEl.hidden = true;
   bigStatus.className = "big-status";
 
+  // Recording starts immediately on the click; there is no start countdown.
   const manual = triggerMode === "manual";
   teach = {
     word, manual,
-    state: manual ? "capturing" : "prime", // prime -> starting -> capturing
-    frames: [], near: [], holdSince: 0, canStop: false, stopSince: 0,
+    state: "capturing",
+    frames: [], near: [], canStop: false, stopSince: 0,
     startedAt: performance.now(),
   };
   if (manual) {
@@ -778,38 +776,21 @@ async function startTeach() {
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
   } else {
     recordBtn.textContent = "Cancel";
-    setTeachMsg("Cover your face with one hand and hold it there. A 3-second countdown starts recording; hold again to stop.", "");
+    setTeachMsg("Recording. Perform your movement, then cover your face with one hand and hold to stop and save.", "");
   }
 }
 
 // One frame of a teaching capture. Mirrors Perform: hold face+hand for the
 // 3-second countdown to start, dance, then hold face+hand again to finish.
+// Recording begins on the Record click. Cover the face and hold for the
+// 3-second countdown to stop and save; `canStop` requires the hand to have
+// left the face once, so a hand already near the face at the start can't
+// instantly end the capture.
 function teachStep(vec, rest, near, now) {
   const t = teach;
-  if (t.manual) {
-    t.frames.push(vec);
-    t.near.push(near);
-    return;
-  }
-  if (t.state === "prime") {  // waiting for the face to be covered
-    if (rest) { t.state = "starting"; t.holdSince = now; }
-    return;
-  }
-  if (t.state === "starting") { // counting down; uncovering cancels
-    if (!rest) { t.state = "prime"; return; }
-    if (now - t.holdSince >= START_HOLD_MS) {
-      t.state = "capturing";
-      t.frames = [vec];
-      t.near = [near];
-      t.startedAt = now;
-      t.canStop = false;
-      t.stopSince = 0;
-    }
-    return;
-  }
-  // capturing
   t.frames.push(vec);
   t.near.push(near);
+  if (t.manual) return;
   if (!rest) t.canStop = true;
   if (t.canStop && rest) {
     if (!t.stopSince) t.stopSince = now;
@@ -831,17 +812,10 @@ function updateTeachUI(bodyVisible, rest) {
     statusEl.textContent = "Can't see your shoulders. Adjust your framing.";
     return;
   }
-  // The big overlay owns the countdown / REC states; keep the pill hidden.
-  if (t.manual || t.state === "starting" || t.state === "capturing") {
-    countdownEl.hidden = true;
-    if (t.manual) statusEl.textContent = "Recording. Click Stop & save when done.";
-    return;
-  }
-  // prime: waiting for the face to be covered
-  countdownEl.hidden = false;
-  countdownEl.classList.remove("rec");
-  countdownEl.textContent = "COVER";
-  statusEl.textContent = "Cover your face with one hand and hold it there to begin.";
+  // The big overlay owns REC / the stop countdown; keep the pill hidden.
+  countdownEl.hidden = true;
+  if (t.manual) statusEl.textContent = "Recording. Click Stop & save when done.";
+  else if (!t.stopSince) statusEl.textContent = "Recording. Cover your face and hold to stop and save.";
 }
 
 function finishTeach(now, timedOut = false) {
@@ -882,6 +856,7 @@ function cancelTeach() {
   teach = null;
   countdownEl.hidden = true;
   countdownEl.classList.remove("rec");
+  bigStatus.className = "big-status"; // clear any REC overlay
   recordBtn.disabled = false;
   recordBtn.textContent = "Record movement";
   setPerformState();
