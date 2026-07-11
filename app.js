@@ -15,7 +15,6 @@ const NUM_LMS = 33;
 // (torso units) or it is dropped as a false start (face covered and uncovered
 // with no gesture in between).
 const MIN_TRAVEL = 0.3;
-const MAX_SEG_MS = 20000;         // abandon a capture that never returns to the face
 const MAX_TEACH_MS = 22000;       // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
 const COOLDOWN_MS = 1200;         // min gap before the same word fires again
@@ -69,7 +68,6 @@ let backend = null;   // active pose backend (see backends.js)
 let ready = false;    // backend loaded and detecting
 let templates = loadTemplates();
 let teach = null;     // active teaching capture (movement-delimited)
-let seg = newSeg();   // live segmentation state
 let lastFireAt = 0;
 let lastFiredWord = "";
 let phrase = [];
@@ -88,10 +86,6 @@ let playback = null;          // {word, items, idx, t0} ghost playback of a save
 // Latest live-body anchor {cx, cy, torso, at}, used to project the playback
 // ghost onto the performer instead of a fixed spot on screen.
 let liveFrame = null;
-
-function newSeg() {
-  return { state: "idle", frames: [], near: [], startedAt: 0, holdSince: 0, canStop: false, stopSince: 0 };
-}
 
 // Largest single-landmark displacement between two pose vectors.
 function maxPoseDist(a, b) {
@@ -402,7 +396,7 @@ async function switchAlgo(key) {
   algoChoice = key;
   localStorage.setItem(ALGO_STORE_KEY, key);
   if (teach) cancelTeach();
-  seg = newSeg();
+  moving = false;
   ready = false;
   try { backend?.close(); } catch {}
   backend = null;
@@ -607,7 +601,7 @@ async function runFrame() {
     catch (e) { console.warn("detect failed:", e); }
     octx.clearRect(0, 0, overlay.width, overlay.height);
 
-    let bodyVisible = false, restNow = false;
+    let bodyVisible = false;
     const lms = pickMainPose(poses);
     if (lms) {
       drawSkeleton(lms, backend.connections, "rgba(255,0,42,0.9)", "#ECFF00");
@@ -624,7 +618,6 @@ async function runFrame() {
           liveFrame = { cx, cy, torso: Math.hypot(shx - cx, shy - cy) || 1e-6, at: now };
         }
         const hands = updateHandsOnFace(lms, now);
-        restNow = hands.left || hands.right;
         const nearNow = isNearFace();
         if (teach) {
           teachStep(vec, hands, nearNow, now);
@@ -666,7 +659,7 @@ async function runFrame() {
     // The teach overlay is driven here, EVERY frame, not inside the
     // detection-gated branch. Otherwise losing sight of the body freezes the
     // on-screen state while the state machine waits.
-    if (teach) updateTeachUI(bodyVisible, restNow);
+    if (teach) updateTeachUI(bodyVisible);
 
     // Big countdown / REC overlay, driven from the live capture phase. Runs
     // after updateTeachUI so it wins the status line during active phases.
@@ -796,9 +789,18 @@ function performStep(vec, now) {
   }
 
   if (sp > MOVE_END) lastActive = now;
-  // Live feedback on the in-progress move, but never fires.
-  const inProgress = scoreSegment(framesInRange(moveStart, now));
-  if (inProgress) showScore(inProgress);
+  // Live feedback on the in-progress move, but never fires. Idle drift at a
+  // resting stance easily crosses MOVE_START, so feedback (meter, closest
+  // hint) waits until the segment has lasted and TRAVELLED like a real move;
+  // otherwise standing still keeps flashing "closest" guesses.
+  const soFar = framesInRange(moveStart, now);
+  if (now - moveStart >= MIN_MOVE_MS && travelOf(soFar) >= MIN_ACTIVE_TRAVEL) {
+    const inProgress = scoreSegment(soFar);
+    if (inProgress) showScore(inProgress);
+  } else {
+    barEl.style.width = "0%";
+    hideClosest();
+  }
 
   const ended = now - lastActive >= SETTLE_MS;
   const tooLong = now - moveStart >= MAX_MOVE_MS;
@@ -806,11 +808,11 @@ function performStep(vec, now) {
 
   // Move complete: match the whole segment (start to when motion stopped).
   moving = false;
-  const seg = framesInRange(moveStart, lastActive);
-  if (now - moveStart < MIN_MOVE_MS || travelOf(seg) < MIN_ACTIVE_TRAVEL) {
+  const segFrames = framesInRange(moveStart, lastActive);
+  if (now - moveStart < MIN_MOVE_MS || travelOf(segFrames) < MIN_ACTIVE_TRAVEL) {
     barEl.style.width = "0%"; hideClosest(); return;
   }
-  const ranked = scoreSegment(seg);
+  const ranked = scoreSegment(segFrames);
   if (!ranked) { barEl.style.width = "0%"; hideClosest(); return; }
   const { best, second, thresh } = showScore(ranked);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
@@ -1064,7 +1066,7 @@ function startTeach() {
   teach = {
     word, manual,
     state: manual ? "capturing" : "prime", // prime -> starting -> capturing
-    frames: [], near: [], holdSince: 0, canStop: false, stopSince: 0,
+    frames: [], near: [], holdSince: 0, canStopL: false, canStopR: false, stopSince: 0,
     armed: false, // require the face to be uncovered once before starting
     startedAt: performance.now(),
   };
@@ -1085,8 +1087,8 @@ const HOLD_GRACE_MS = 350;
 // countdown STARTS recording; LEFT hand over the face held for the countdown
 // STOPS and saves. Different hands for start and stop, so a stop can never
 // re-arm a start and there is no ambiguity about which countdown is which.
-// `canStop` requires the left hand to have been off the face once, so covering
-// with both hands at the start can't stop the capture instantly.
+// A hand can only stop the capture after IT has been off the face once, so the
+// starting hand still resting there can't stop the capture instantly.
 function teachStep(vec, hands, near, now) {
   const t = teach;
   if (t.manual) { t.frames.push(vec); t.near.push(near); return; }
@@ -1127,13 +1129,12 @@ function teachStep(vec, hands, near, now) {
 
 // On-screen overlay for the teach flow, driven every frame so it can also say
 // when the body is NOT being detected instead of silently freezing.
-function updateTeachUI(bodyVisible, rest) {
+function updateTeachUI(bodyVisible) {
   const t = teach;
   if (!t) return;
   if (!bodyVisible) {
     countdownEl.hidden = false;
     countdownEl.textContent = "?";
-    countdownEl.classList.remove("rec");
     statusEl.textContent = "Can't see your shoulders. Adjust your framing.";
     return;
   }
@@ -1146,7 +1147,6 @@ function updateTeachUI(bodyVisible, rest) {
   }
   // prime: waiting for a fresh right-hand cover
   countdownEl.hidden = false;
-  countdownEl.classList.remove("rec");
   if (!t.armed) {
     countdownEl.textContent = "…";
     statusEl.textContent = "Lower your right hand first, then cover your face with it to start the countdown.";
@@ -1160,7 +1160,6 @@ function finishTeach(now, timedOut = false) {
   const t = teach;
   teach = null;
   countdownEl.hidden = true;
-  countdownEl.classList.remove("rec");
   recordBtn.disabled = false;
   recordBtn.textContent = "Record movement";
   setPerformState();
@@ -1211,7 +1210,6 @@ function clearTeachPreview() {
 function cancelTeach() {
   teach = null;
   countdownEl.hidden = true;
-  countdownEl.classList.remove("rec");
   bigStatus.className = "big-status"; // clear any REC overlay
   recordBtn.disabled = false;
   recordBtn.textContent = "Record movement";
@@ -1523,7 +1521,6 @@ function activateTab(tab, focus = false) {
   // Leaving the Teach tab mid-recording abandons it, so an active teach can
   // never keep "recording" (REC) into Perform. Also drop any manual capture.
   if (teach && name !== "teach") cancelTeach();
-  seg = newSeg();
   manualCapturing = false;
   moving = false; // drop any half-finished Perform move
   hideClosest();
@@ -1556,10 +1553,26 @@ triggerModeSel.addEventListener("change", () => {
   holdBtn.hidden = triggerMode !== "manual";
   manualCapturing = false;
   moving = false;
-  seg = newSeg();
   setPerformState();
 });
 soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
+
+// Landscape vs vertical (portrait-cropped) presentation, remembered across
+// visits. Pure CSS: video and overlay share object-fit: cover, so the pose
+// skeleton stays aligned with the cropped image in either orientation.
+const orientSel = document.getElementById("orientSel");
+const ORIENT_KEY = "queercoded.orientation.v1";
+function applyOrientation(mode) {
+  document.querySelector(".layout").classList.toggle("portrait", mode === "portrait");
+}
+const savedOrient = localStorage.getItem(ORIENT_KEY) === "portrait" ? "portrait" : "landscape";
+orientSel.value = savedOrient;
+applyOrientation(savedOrient);
+orientSel.addEventListener("change", () => {
+  localStorage.setItem(ORIENT_KEY, orientSel.value);
+  applyOrientation(orientSel.value);
+});
+
 speakToggle.addEventListener("change", () => {
   speakOn = speakToggle.checked;
   if (!speakOn && "speechSynthesis" in window) speechSynthesis.cancel();
@@ -1589,7 +1602,6 @@ window.addEventListener("keyup", (e) => {
 });
 
 // ---------- Helpers ----------
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function setTeachMsg(msg, cls) { teachMsg.textContent = msg; teachMsg.className = "teach-msg " + (cls || "muted"); }
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

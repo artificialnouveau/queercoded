@@ -238,15 +238,6 @@ body {
   flex-shrink: 0;
 }
 .pill[hidden] { display: none; }
-.pill.rec {
-  background: var(--accent);
-  color: #fff;
-  animation: pulse 1s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255,0,42,.6); }
-  50% { box-shadow: 0 0 0 7px rgba(255,0,42,0); }
-}
 
 .model-row {
   margin-top: 10px;
@@ -261,6 +252,7 @@ body {
 }
 .model-row label { font-size: 13px; color: var(--muted); white-space: nowrap; }
 .model-row select { width: auto; flex: 1; max-width: 420px; }
+.model-row #orientSel { flex: 0 0 auto; }
 
 .panel {
   background: var(--panel);
@@ -310,7 +302,6 @@ select {
 }
 .check input { accent-color: var(--accent); width: 16px; height: 16px; }
 .btn.recording { background: var(--warn); border-color: var(--warn); color: #1a0a12; font-weight: 700; }
-.code-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .code-item .count {
   display: inline-block;
   font-size: 11px;
@@ -420,7 +411,7 @@ input:focus-visible,
 
 /* Respect reduced-motion: drop the pulsing/transition animation. */
 @media (prefers-reduced-motion: reduce) {
-  .big-status.rec, .pill.rec { animation: none; }
+  .big-status.rec { animation: none; }
   .big-word, .big-status, .bar-fill { transition: none; }
   .video-wrap.riso .grain { animation: none; }
   .video-wrap.riso.flash #video { animation: none; }
@@ -530,3 +521,20 @@ a { color: var(--yellow); }
 /* Reading pages (About / AlgoDance): hide the video stage, panel fills width. */
 .layout.content-full { grid-template-columns: 1fr; }
 .layout.content-full .stage { display: none; }
+
+/* Vertical layout: a portrait-cropped camera (for vertical screens or a
+   phone-style framing) with the panel stacked below. The video and overlay
+   both use object-fit: cover, so the crop stays aligned. */
+.layout.portrait { grid-template-columns: 1fr; }
+.layout.portrait .video-wrap {
+  aspect-ratio: 3 / 4;
+  max-width: min(100%, 66vh);
+  margin: 0 auto;
+}
+.layout.portrait .status-bar,
+.layout.portrait .model-row {
+  max-width: min(100%, 66vh);
+  margin-left: auto;
+  margin-right: auto;
+}
+.layout.portrait .panel { max-width: 720px; margin: 0 auto; width: 100%; }
