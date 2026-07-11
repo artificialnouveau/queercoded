@@ -102,15 +102,32 @@ body {
 }
 
 .stage { min-width: 0; }
+/* Sized so the header, the video, the status line, and the algorithm row all
+   fit the window with no scrolling: height is capped by the viewport (minus
+   the header and the bars) and by the column width (via the aspect ratio). */
 .video-wrap {
   position: relative;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
+  height: min(calc(100vh - 300px), calc((100vw - 440px) * 0.75));
+  min-height: 240px;
   aspect-ratio: 4 / 3;
+  margin: 0 auto;
   background: #000;
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--line);
   box-shadow: 0 8px 28px rgba(0,0,0,.4);
+}
+@media (max-width: 900px) {
+  .video-wrap { width: 100%; height: auto; }
+}
+/* Rotated mode scrolls; the video takes the full width there. */
+body.rot90 .video-wrap { width: 100%; height: auto; max-width: none; }
+/* Desktop: the page itself never scrolls (the side panel scrolls internally),
+   so the header and status line are always on screen. */
+@media (min-width: 901px) {
+  body:not(.rot90) { overflow: hidden; }
 }
 #video, #overlay {
   position: absolute;

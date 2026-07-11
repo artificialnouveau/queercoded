@@ -666,7 +666,7 @@ async function runFrame() {
             if (manualCapturing) manualFrames.push(vec);
           } else {
             // Perform is continuous but fires only when a whole move completes.
-            performStep(vec, now);
+            performStep(vec, now, hands.left || hands.right);
           }
         }
         // Face target circle + R/L hand labels belong to Teach only.
@@ -762,9 +762,24 @@ function maxDevFrom(frames, ref) {
 // neutral is itself a motion and must not trigger a second (different) word.
 const FIRE_GAP_MS = 900;
 
-function perfPush(vec, now) {
-  perfBuf.push({ vec, t: now });
+function perfPush(vec, now, face) {
+  perfBuf.push({ vec, t: now, face: !!face });
   while (perfBuf.length && perfBuf[0].t < now - PERF_BUF_MS) perfBuf.shift();
+}
+
+// Hand-on-face share of a window, and whether its tail ends on the face.
+// Raising a hand to the face is the single most common idle gesture (and the
+// app's own teach trigger), and it is skeletally an arm raise, so it kept
+// "matching" arm codes. A segment that ends on the face, or mostly lives
+// there, is a rest gesture, never a dance move.
+function faceStats(t0, t1) {
+  let n = 0, on = 0, tailOn = false;
+  for (const e of perfBuf) {
+    if (e.t < t0 || e.t > t1) continue;
+    n++;
+    if (e.face) { on++; if (e.t >= t1 - 300) tailOn = true; }
+  }
+  return { frac: n ? on / n : 0, tailOn };
 }
 
 // Pose vectors buffered within [t0, t1].
@@ -863,8 +878,8 @@ function showScore(ranked) {
 
 // One Perform frame: track motion, show live feedback, and fire ONLY when a
 // move completes (settles), matched over the whole segment.
-function performStep(vec, now) {
-  perfPush(vec, now);
+function performStep(vec, now, face) {
+  perfPush(vec, now, face);
   const sp = speedNow(now);
   learnRestPose(vec, sp);
 
@@ -881,6 +896,7 @@ function performStep(vec, now) {
   // otherwise standing still keeps flashing "closest" guesses.
   const soFar = framesInRange(moveStart, now);
   const looksReal = now - moveStart >= MIN_MOVE_MS
+    && !face
     && travelOf(soFar) >= MIN_ACTIVE_TRAVEL
     && (!restPose || maxDevFrom(soFar, restPose) >= REST_DEV_MIN);
   if (looksReal) {
@@ -898,18 +914,24 @@ function performStep(vec, now) {
   // Move complete: match the whole segment (start to when motion stopped).
   moving = false;
   const segFrames = framesInRange(moveStart, lastActive);
+  const fs = faceStats(moveStart, lastActive);
   if (now - moveStart < MIN_MOVE_MS || travelOf(segFrames) < MIN_ACTIVE_TRAVEL
-      || (restPose && maxDevFrom(segFrames, restPose) < REST_DEV_MIN)) {
+      || (restPose && maxDevFrom(segFrames, restPose) < REST_DEV_MIN)
+      || fs.tailOn || fs.frac > 0.3) {
     barEl.style.width = "0%"; hideClosest(); return;
   }
   const ranked = scoreSegment(segFrames);
   if (!ranked) { barEl.style.width = "0%"; hideClosest(); return; }
   const { best, second, thresh } = showScore(ranked);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
-  if (best.dist < thresh && !ambiguous) {
+  if (best.dist < thresh * FIRE_MARGIN && !ambiguous) {
     const ok = now - lastFireAt > FIRE_GAP_MS
       && (best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS);
-    if (ok) fireWord(best.word, now);
+    if (ok) {
+      console.log(`fire "${best.word}" dist=${best.dist.toFixed(3)} thresh=${thresh.toFixed(3)}`
+        + (second ? ` second="${second.word}" ${second.dist.toFixed(3)}` : ""));
+      fireWord(best.word, now);
+    }
   }
 }
 
@@ -920,12 +942,16 @@ function showClosest(word, pct) {
 }
 function hideClosest() { closestHintEl.hidden = true; }
 
-const DEFAULT_SENS = 0.28;   // slider midpoint the auto thresholds scale against
-const AMBIG_GAP_FRAC = 0.18; // second-best must be at least this much farther
+const DEFAULT_SENS = 0.28;    // slider midpoint the auto thresholds scale against
+const AMBIG_GAP_FRAC = 0.25;  // second-best must be at least this much farther
+const CROSS_WORD_FRAC = 0.55; // a match may use at most this share of the gap to the nearest OTHER word
+const FIRE_MARGIN = 0.8;      // firing needs dist under this fraction of the threshold (display shows the full range)
 
-// Recompute per-word thresholds from the spread of each word's own examples.
-// A word whose examples are very consistent gets a tight threshold; a loose
-// word gets a looser one. Words with a single example fall back to the slider.
+// Recompute per-word calibration: how consistent a word's own examples are
+// (auto threshold) AND how close it sits to every other word (cross cap).
+// Consistent examples give a tight threshold; a word that lives near another
+// word gets capped below the distance between them, so two different codes
+// ("heart" vs "peace") can never blur into each other.
 function recomputeWordStats() {
   wordStats = new Map();
   const byWord = new Map();
@@ -935,33 +961,50 @@ function recomputeWordStats() {
     if (!byWord.has(k)) byWord.set(k, []);
     byWord.get(k).push(t);
   }
-  for (const [k, items] of byWord) {
-    if (items.length < 2) continue;
-    const dists = [];
-    for (let i = 0; i < items.length; i++)
-      for (let j = i + 1; j < items.length; j++)
-        dists.push(dtw(items[i].seq, items[j].seq));
-    dists.sort((a, b) => a - b);
-    const med = dists[Math.floor(dists.length / 2)];
-    // A live performance sits farther from any example than examples sit from
-    // each other, so allow roughly 2.4x the typical inter-example distance.
-    // The ceiling stays firm: inconsistent examples must not balloon a word's
-    // threshold until near-anything (including resting) matches it.
-    wordStats.set(k, Math.max(0.1, Math.min(0.42, med * 2.4)));
+  const entries = [...byWord.entries()];
+  for (const [k, items] of entries) {
+    let auto = null;
+    if (items.length >= 2) {
+      const dists = [];
+      for (let i = 0; i < items.length; i++)
+        for (let j = i + 1; j < items.length; j++)
+          dists.push(dtw(items[i].seq, items[j].seq));
+      dists.sort((a, b) => a - b);
+      const med = dists[Math.floor(dists.length / 2)];
+      // A live performance sits farther from any example than examples sit
+      // from each other, so allow roughly 2.4x the typical inter-example
+      // distance. The ceiling stays firm: inconsistent examples must not
+      // balloon a word's threshold until near-anything matches it.
+      auto = Math.max(0.1, Math.min(0.42, med * 2.4));
+    }
+    // Smallest DTW distance from any example of this word to any example of
+    // any OTHER word: the separation this word has to respect.
+    let cross = Infinity;
+    for (const [k2, items2] of entries) {
+      if (k2 === k) continue;
+      for (const a of items)
+        for (const b of items2) {
+          const d = dtw(a.seq, b.seq);
+          if (d < cross) cross = d;
+        }
+    }
+    wordStats.set(k, { auto, cross });
   }
 }
 
-// Effective threshold for a word: its auto value (if any) scaled by where the
-// user has the global sensitivity slider, else the slider value itself. Both
-// paths are hard-capped: DTW's path normalization understates the mismatch
-// between a still body and a moving code, so a loose threshold lets standing
-// "match" an arm move. 0.42 (and 0.35 for single-example words) keeps even a
-// maxed-out slider inside sane territory.
+// Effective threshold for a word: its auto value (if any) scaled by the
+// sensitivity slider, hard-capped (DTW's path normalization understates
+// still-vs-moving mismatch, so loose thresholds let standing "match" an arm
+// move: 0.42, or 0.35 for single-example words, even with the slider maxed),
+// and never beyond CROSS_WORD_FRAC of the gap to the nearest other word.
 function thresholdFor(word) {
   const base = parseFloat(threshInput.value);
-  const auto = wordStats.get(word.toLowerCase());
-  if (auto == null) return Math.min(base, 0.35);
-  return Math.max(0.06, Math.min(0.42, auto * (base / DEFAULT_SENS)));
+  const s = wordStats.get(word.toLowerCase());
+  let t = s?.auto == null
+    ? Math.min(base, 0.35)
+    : Math.max(0.06, Math.min(0.42, s.auto * (base / DEFAULT_SENS)));
+  if (s && isFinite(s.cross)) t = Math.min(t, Math.max(0.08, s.cross * CROSS_WORD_FRAC));
+  return t;
 }
 
 function matchAndFire(frames, now) {
@@ -1001,7 +1044,7 @@ function matchAndFire(frames, now) {
 
   // Ambiguous when a different word is nearly as close: skip rather than guess.
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
-  if (best.dist < thresh && !ambiguous) {
+  if (best.dist < thresh * FIRE_MARGIN && !ambiguous) {
     const ok = best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS;
     if (ok) fireWord(best.word, now);
   }
@@ -1935,7 +1978,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queer Coded build v9 (2026-07-11)");
+  console.log("Queer Coded build v10 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
