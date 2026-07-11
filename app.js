@@ -468,10 +468,8 @@ async function runFrame() {
         } else if (triggerMode === "manual") {
           if (manualCapturing) manualFrames.push(vec);
         } else {
-          // Perform is continuous: keep a rolling buffer and match against saved
-          // codes on a short interval, firing the label when a movement matches.
-          perfPush(vec, now);
-          if (now - lastMatchAt >= MATCH_INTERVAL_MS) { lastMatchAt = now; recognizeContinuous(now); }
+          // Perform is continuous but fires only when a whole move completes.
+          performStep(vec, now);
         }
         // Face target circle belongs to Teach's cover-to-record bracket only.
         if (teach && !teach.manual && !playback) drawRestTargets();
@@ -508,64 +506,107 @@ async function runFrame() {
 }
 
 // ---------- Continuous performance recognition ----------
-// Perform watches continuously: a rolling buffer of recent poses is matched,
-// every MATCH_INTERVAL_MS, against each saved code over a window the length of
-// that code. When a movement matches, its label is printed and spoken.
-const PERF_BUF_MS = 4000;         // rolling history kept
-const MATCH_INTERVAL_MS = 120;    // how often recognition runs
-const MIN_ACTIVE_TRAVEL = 0.28;   // ignore near-stillness so idle never matches
+// Perform watches continuously but recognizes a movement only once it COMPLETES:
+// motion boundaries segment each move, and the whole finished segment is matched
+// against saved codes. A partial move in progress updates the meter but never
+// fires. When a completed move matches, its label is printed and spoken.
+const PERF_BUF_MS = 8000;         // rolling history kept
+const MIN_ACTIVE_TRAVEL = 0.28;   // a completed move must have travelled this far
+// Motion-boundary detection: a move begins when the fastest landmark's speed
+// (displacement over SPEED_WIN_MS) crosses MOVE_START, and ends once speed has
+// stayed below MOVE_END for SETTLE_MS. Matching (and firing) happens ONLY at
+// the end of a move, on the whole segment, so a partial move can't fire early.
+const SPEED_WIN_MS = 130;
+const MOVE_START = 0.13;
+const MOVE_END = 0.06;
+const SETTLE_MS = 260;
+const MIN_MOVE_MS = 350;
+const MAX_MOVE_MS = 7000;
 const perfBuf = [];               // {vec, t}
-let lastMatchAt = 0;
+let moving = false, moveStart = 0, lastActive = 0;
 
 function perfPush(vec, now) {
   perfBuf.push({ vec, t: now });
   while (perfBuf.length && perfBuf[0].t < now - PERF_BUF_MS) perfBuf.shift();
 }
 
-// The buffered pose vectors from the last `durMs`.
-function windowFrames(durMs, now) {
-  const start = now - durMs;
+// Pose vectors buffered within [t0, t1].
+function framesInRange(t0, t1) {
   const out = [];
-  for (let i = perfBuf.length - 1; i >= 0; i--) {
-    if (perfBuf[i].t < start) break;
-    out.push(perfBuf[i].vec);
-  }
-  out.reverse();
+  for (const e of perfBuf) if (e.t >= t0 && e.t <= t1) out.push(e.vec);
   return out;
 }
 
-function recognizeContinuous(now) {
+// Fastest-landmark speed right now: displacement over the last ~SPEED_WIN_MS.
+function speedNow(now) {
+  const last = perfBuf[perfBuf.length - 1];
+  if (!last) return 0;
+  for (let i = perfBuf.length - 2; i >= 0; i--) {
+    if (now - perfBuf[i].t >= SPEED_WIN_MS) return maxPoseDist(last.vec, perfBuf[i].vec);
+  }
+  return 0;
+}
+
+// Best distance per word for a candidate segment (current algorithm family).
+function scoreSegment(frames) {
   const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
   if (pool.length === 0) {
     bestWordEl.textContent = templates.length ? "none for this algorithm" : "none yet";
-    return;
+    return null;
   }
-  // Skip while essentially still, so standing around never fires a match.
-  if (travelOf(windowFrames(1200, now)) < MIN_ACTIVE_TRAVEL) { barEl.style.width = "0%"; hideClosest(); return; }
-
-  // Best (smallest) distance per word, each matched over a window its own length.
+  if (frames.length < MIN_SEG_FRAMES) return null;
+  const live = resampleSeq(frames, FIXED_LEN);
   const perWord = new Map();
-  for (const tmpl of pool) {
-    const dur = Math.max(500, Math.min(PERF_BUF_MS, tmpl.durMs || 1500));
-    const win = windowFrames(dur, now);
-    if (win.length < MIN_SEG_FRAMES) continue;
-    const live = resampleSeq(win, FIXED_LEN);
-    const d = dtw(live, tmpl.seq);
-    const k = tmpl.word.toLowerCase();
-    if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: tmpl.word, dist: d });
+  for (const t of pool) {
+    const d = dtw(live, t.seq);
+    const k = t.word.toLowerCase();
+    if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
   }
-  if (perWord.size === 0) return;
-  const ranked = [...perWord.values()].sort((a, b) => a.dist - b.dist);
+  return [...perWord.values()].sort((a, b) => a.dist - b.dist);
+}
+
+// Update the meter/closest hint from a ranked list; returns the top comparison.
+function showScore(ranked) {
   const best = ranked[0], second = ranked[1];
   const thresh = thresholdFor(best.word);
-
   const pct = Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100));
   bestWordEl.textContent = best.word;
   matchPctEl.textContent = Math.round(pct) + "%";
   barEl.style.width = pct + "%";
-  // Subtle on-video hint of the closest guess once it is at least plausible.
   if (pct >= 25) showClosest(best.word, pct); else hideClosest();
+  return { best, second, thresh };
+}
 
+// One Perform frame: track motion, show live feedback, and fire ONLY when a
+// move completes (settles), matched over the whole segment.
+function performStep(vec, now) {
+  perfPush(vec, now);
+  const sp = speedNow(now);
+
+  if (!moving) {
+    if (sp > MOVE_START) { moving = true; moveStart = now - SPEED_WIN_MS; lastActive = now; }
+    else { barEl.style.width = "0%"; hideClosest(); }
+    return;
+  }
+
+  if (sp > MOVE_END) lastActive = now;
+  // Live feedback on the in-progress move, but never fires.
+  const inProgress = scoreSegment(framesInRange(moveStart, now));
+  if (inProgress) showScore(inProgress);
+
+  const ended = now - lastActive >= SETTLE_MS;
+  const tooLong = now - moveStart >= MAX_MOVE_MS;
+  if (!ended && !tooLong) return;
+
+  // Move complete: match the whole segment (start to when motion stopped).
+  moving = false;
+  const seg = framesInRange(moveStart, lastActive);
+  if (now - moveStart < MIN_MOVE_MS || travelOf(seg) < MIN_ACTIVE_TRAVEL) {
+    barEl.style.width = "0%"; hideClosest(); return;
+  }
+  const ranked = scoreSegment(seg);
+  if (!ranked) return;
+  const { best, second, thresh } = showScore(ranked);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
   if (best.dist < thresh && !ambiguous) {
     const ok = best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS;
@@ -1216,6 +1257,7 @@ function activateTab(tab, focus = false) {
   if (teach && name !== "teach") cancelTeach();
   seg = newSeg();
   manualCapturing = false;
+  moving = false; // drop any half-finished Perform move
   hideClosest();
   if (ready) setPerformState();
   if (focus) tab.focus();
@@ -1245,6 +1287,7 @@ triggerModeSel.addEventListener("change", () => {
   triggerMode = triggerModeSel.value;
   holdBtn.hidden = triggerMode !== "manual";
   manualCapturing = false;
+  moving = false;
   seg = newSeg();
   setPerformState();
 });
