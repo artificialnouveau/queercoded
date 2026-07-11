@@ -365,6 +365,24 @@ select {
 .fam-movenet { background: rgba(52,211,153,.20); color: #7ff0c6; }
 .fam-yolo { background: rgba(255,195,113,.20); color: #ffd39a; }
 .model-note { display: block; margin: 6px 2px 0; font-size: 11px; }
+
+/* Keyboard focus: a clear ring on interactive elements (mouse clicks don't
+   trigger :focus-visible, so this only shows for keyboard users). */
+.tab:focus-visible,
+.btn:focus-visible,
+select:focus-visible,
+input:focus-visible,
+.check:focus-within {
+  outline: 3px solid var(--accent-2);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Respect reduced-motion: drop the pulsing/transition animation. */
+@media (prefers-reduced-motion: reduce) {
+  .big-status.rec, .pill.rec { animation: none; }
+  .big-word, .big-status, .bar-fill { transition: none; }
+}
 .btn.playing { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
 .codes-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .empty { color: var(--muted); font-style: italic; padding: 12px 0; }

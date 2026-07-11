@@ -40,6 +40,9 @@ const clearPhraseBtn = document.getElementById("clearPhrase");
 const triggerModeSel = document.getElementById("triggerMode");
 const holdBtn = document.getElementById("holdBtn");
 const soundToggle = document.getElementById("soundToggle");
+const speakToggle = document.getElementById("speakToggle");
+const speakPhraseBtn = document.getElementById("speakPhrase");
+const undoWordBtn = document.getElementById("undoWord");
 const wordList = document.getElementById("wordList");
 
 const wordInput = document.getElementById("wordInput");
@@ -65,14 +68,23 @@ let phrase = [];
 // Perform options / manual capture
 let triggerMode = "auto";     // "auto" (rest pose) | "manual" (hold)
 let soundOn = true;
+let speakOn = true;
+// Per-word recognition thresholds, auto-calibrated from each word's examples.
+// Rebuilt whenever the code set or algorithm family changes. See matchAndFire.
+let wordStats = new Map();
 let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
 
 function newSeg() {
-  return { state: "idle", frames: [], near: [], startedAt: 0 };
+  return { state: "idle", frames: [], near: [], startedAt: 0, restSince: 0 };
 }
+
+// A recording only ends once the hand has been on the face continuously for
+// this long, so a gesture that merely sweeps a hand past the face mid-move
+// does not stop the capture early.
+const REST_DWELL_MS = 260;
 
 // Largest single-landmark displacement between two pose vectors.
 function maxPoseDist(a, b) {
@@ -251,7 +263,10 @@ function loadTemplates() {
   try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; }
   catch { return []; }
 }
-function saveTemplates() { localStorage.setItem(STORE_KEY, JSON.stringify(templates)); }
+function saveTemplates() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(templates));
+  recomputeWordStats();
+}
 function newId() { return "c_" + Math.random().toString(36).slice(2, 9) + performance.now().toString(36); }
 
 // ---------- Pose algorithms ----------
@@ -279,6 +294,7 @@ async function initPose() {
   backend = createBackend(algoChoice, { yoloModelUrl: localStorage.getItem(YOLO_URL_KEY) || "" });
   await backend.load();
   currentFamily = backend.family;
+  recomputeWordStats(); // thresholds are per-family
 }
 
 // Swap algorithm at runtime. Detection is paused (ready=false) during the
@@ -380,10 +396,16 @@ function drawSkeleton(pose, connections, boneColor, dotColor) {
 
 // ---------- Main loop ----------
 // Async because MoveNet and YOLO detect asynchronously; `inflight` keeps frames
-// from overlapping. BlazePose resolves synchronously, so this stays real-time.
+// from overlapping. Detection is throttled to ~30fps, which is plenty for
+// gesture capture and roughly halves GPU/battery load versus running every
+// animation frame.
+const MIN_FRAME_MS = 33;
 let inflight = false;
+let lastDetectAt = 0;
 async function loop() {
-  if (ready && backend && !inflight && video.readyState >= 2) {
+  const t = performance.now();
+  if (ready && backend && !inflight && video.readyState >= 2 && t - lastDetectAt >= MIN_FRAME_MS) {
+    lastDetectAt = t;
     inflight = true;
     try { await runFrame(); }
     finally { inflight = false; }
@@ -485,7 +507,12 @@ function segmentStep(vec, rest, near, now) {
   // recording
   seg.frames.push(vec);
   seg.near.push(near);
-  if (rest) { closeSegment(now); return; }
+  if (rest) {
+    if (!seg.restSince) seg.restSince = now;
+    if (now - seg.restSince >= REST_DWELL_MS) { closeSegment(now); return; }
+  } else {
+    seg.restSince = 0;
+  }
   if (now - seg.startedAt > MAX_SEG_MS) { seg = newSeg(); setPerformState(); return; }
   setPerformState();
 }
@@ -498,6 +525,44 @@ function closeSegment(now) {
   if (frames.length >= MIN_SEG_FRAMES && travelOf(frames) >= MIN_TRAVEL) matchAndFire(frames, now);
 }
 
+const DEFAULT_SENS = 0.28;   // slider midpoint the auto thresholds scale against
+const AMBIG_GAP_FRAC = 0.18; // second-best must be at least this much farther
+
+// Recompute per-word thresholds from the spread of each word's own examples.
+// A word whose examples are very consistent gets a tight threshold; a loose
+// word gets a looser one. Words with a single example fall back to the slider.
+function recomputeWordStats() {
+  wordStats = new Map();
+  const byWord = new Map();
+  for (const t of templates) {
+    if ((t.family || "blaze") !== currentFamily) continue;
+    const k = t.word.toLowerCase();
+    if (!byWord.has(k)) byWord.set(k, []);
+    byWord.get(k).push(t);
+  }
+  for (const [k, items] of byWord) {
+    if (items.length < 2) continue;
+    const dists = [];
+    for (let i = 0; i < items.length; i++)
+      for (let j = i + 1; j < items.length; j++)
+        dists.push(dtw(items[i].seq, items[j].seq));
+    dists.sort((a, b) => a - b);
+    const med = dists[Math.floor(dists.length / 2)];
+    // A live performance sits farther from any example than examples sit from
+    // each other, so allow roughly 2.4x the typical inter-example distance.
+    wordStats.set(k, Math.max(0.1, Math.min(0.6, med * 2.4)));
+  }
+}
+
+// Effective threshold for a word: its auto value (if any) scaled by where the
+// user has the global sensitivity slider, else the slider value itself.
+function thresholdFor(word) {
+  const base = parseFloat(threshInput.value);
+  const auto = wordStats.get(word.toLowerCase());
+  if (auto == null) return base;
+  return Math.max(0.06, Math.min(0.6, auto * (base / DEFAULT_SENS)));
+}
+
 function matchAndFire(frames, now) {
   // Only compare against codes taught with the current algorithm family; the
   // three algorithms do not agree on scale, so cross-family matching is noise.
@@ -507,17 +572,25 @@ function matchAndFire(frames, now) {
     return;
   }
   const live = resampleSeq(frames, FIXED_LEN);
-  const thresh = parseFloat(threshInput.value);
-  let best = { word: null, dist: Infinity };
+  // Best (smallest) distance per distinct word.
+  const perWord = new Map();
   for (const t of pool) {
+    const k = t.word.toLowerCase();
     const d = dtw(live, t.seq);
-    if (d < best.dist) best = { word: t.word, dist: d };
+    if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
   }
+  const ranked = [...perWord.values()].sort((a, b) => a.dist - b.dist);
+  const best = ranked[0], second = ranked[1];
+  const thresh = thresholdFor(best.word);
+
   bestWordEl.textContent = best.word ?? "—";
   bestDistEl.textContent = isFinite(best.dist) ? best.dist.toFixed(3) : "—";
   const pct = isFinite(best.dist) ? Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100)) : 0;
   barEl.style.width = pct + "%";
-  if (best.dist < thresh) {
+
+  // Ambiguous when a different word is nearly as close: skip rather than guess.
+  const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
+  if (best.dist < thresh && !ambiguous) {
     const ok = best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS;
     if (ok) fireWord(best.word, now);
   }
@@ -540,8 +613,21 @@ function fireWord(word, now) {
   lastFiredWord = word;
   showBigWord(word);
   ping();
+  speak(word);
   phrase.push(word);
   renderPhrase();
+}
+
+// Speak text aloud with the Web Speech API. Cancels any in-progress speech so
+// rapid matches stay snappy rather than queueing up.
+function speak(text) {
+  if (!speakOn || !("speechSynthesis" in window) || !text) return;
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1; u.pitch = 1;
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  } catch {}
 }
 
 // Short confirmation tone on a successful match.
@@ -626,7 +712,7 @@ async function startTeach() {
   teach = {
     word, manual,
     state: "prime",          // prime -> armed -> capturing (manual jumps straight to capturing)
-    frames: [], near: [],
+    frames: [], near: [], restSince: 0,
     startedAt: performance.now(),
   };
   recordBtn.disabled = false;
@@ -667,7 +753,12 @@ function teachStep(vec, rest, near, now) {
   // capturing
   t.frames.push(vec);
   t.near.push(near);
-  if (rest) finishTeach(now, false);
+  if (rest) {
+    if (!t.restSince) t.restSince = now;
+    if (now - t.restSince >= REST_DWELL_MS) finishTeach(now, false);
+  } else {
+    t.restSince = 0;
+  }
 }
 
 // On-screen overlay for the teach flow, driven every frame so it can also say
@@ -935,19 +1026,42 @@ exportBtn.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 importBtn.addEventListener("click", () => importFile.click());
+// A code is valid only if its seq is FIXED_LEN frames of NUM_LMS*2 finite
+// numbers. Guards against malformed or hostile files breaking the matcher.
+function isValidTemplate(t) {
+  if (!t || typeof t.word !== "string" || !t.word.trim()) return false;
+  if (!Array.isArray(t.seq) || t.seq.length !== FIXED_LEN) return false;
+  return t.seq.every((f) => Array.isArray(f) && f.length === NUM_LMS * 2 && f.every((n) => Number.isFinite(n)));
+}
+// Content signature for dedupe: word + family + coarsely-rounded sequence.
+function codeSignature(t) {
+  const fam = t.family || "blaze";
+  return t.word.toLowerCase() + "|" + fam + "|" + t.seq.map((f) => f.map((n) => n.toFixed(2)).join(",")).join(";");
+}
+
 importFile.addEventListener("change", async () => {
   const file = importFile.files[0];
   if (!file) return;
   try {
     const incoming = JSON.parse(await file.text());
     if (!Array.isArray(incoming)) throw new Error("bad format");
-    let added = 0;
-    for (const t of incoming) {
-      if (t && t.word && Array.isArray(t.seq)) { templates.push({ ...t, id: newId() }); added++; }
+    const seen = new Set(templates.map(codeSignature));
+    let added = 0, skipped = 0, invalid = 0;
+    for (const raw of incoming) {
+      const t = { ...raw, family: raw.family || "blaze" };
+      if (!isValidTemplate(t)) { invalid++; continue; }
+      const sig = codeSignature(t);
+      if (seen.has(sig)) { skipped++; continue; }
+      seen.add(sig);
+      templates.push({ ...t, id: newId(), createdAt: t.createdAt || Date.now() });
+      added++;
     }
     saveTemplates();
     renderCodeList();
-    alert(`Imported ${added} code(s).`);
+    let msg = `Imported ${added} code(s).`;
+    if (skipped) msg += ` Skipped ${skipped} duplicate(s).`;
+    if (invalid) msg += ` Ignored ${invalid} invalid entr${invalid === 1 ? "y" : "ies"}.`;
+    alert(msg);
   } catch { alert("Could not read that file."); }
   importFile.value = "";
 });
@@ -958,12 +1072,29 @@ clearAllBtn.addEventListener("click", () => {
 });
 
 // ---------- UI wiring ----------
-document.querySelectorAll(".tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("is-active"));
-    tab.classList.add("is-active");
-    const name = tab.dataset.tab;
-    document.querySelectorAll(".tabpane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
+const tabs = [...document.querySelectorAll(".tab")];
+function activateTab(tab, focus = false) {
+  const name = tab.dataset.tab;
+  for (const t of tabs) {
+    const on = t === tab;
+    t.classList.toggle("is-active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+    t.tabIndex = on ? 0 : -1;
+  }
+  document.querySelectorAll(".tabpane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
+  if (focus) tab.focus();
+}
+tabs.forEach((tab) => {
+  tab.addEventListener("click", () => activateTab(tab));
+  // Arrow / Home / End navigation, per the ARIA tabs pattern.
+  tab.addEventListener("keydown", (e) => {
+    const i = tabs.indexOf(tab);
+    let j = -1;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") j = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") j = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = tabs.length - 1;
+    if (j >= 0) { e.preventDefault(); activateTab(tabs[j], true); }
   });
 });
 threshInput.addEventListener("input", () => (threshVal.textContent = threshInput.value));
@@ -982,6 +1113,14 @@ triggerModeSel.addEventListener("change", () => {
   setPerformState();
 });
 soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
+speakToggle.addEventListener("change", () => {
+  speakOn = speakToggle.checked;
+  if (!speakOn && "speechSynthesis" in window) speechSynthesis.cancel();
+});
+speakPhraseBtn.addEventListener("click", () => {
+  const wasOn = speakOn; speakOn = true; speak(phrase.join(", ")); speakOn = wasOn;
+});
+undoWordBtn.addEventListener("click", () => { phrase.pop(); renderPhrase(); });
 modelSel.addEventListener("change", () => switchAlgo(modelSel.value));
 
 // Hold-to-capture: pointer (mouse/touch)

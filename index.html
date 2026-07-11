@@ -10,10 +10,10 @@
   <header class="topbar">
     <h1 class="logo">Queer Coded</h1>
     <p class="tagline">Code a movement. Move to speak.</p>
-    <nav class="tabs">
-      <button class="tab is-active" data-tab="teach">Teach</button>
-      <button class="tab" data-tab="perform">Perform</button>
-      <button class="tab" data-tab="codes">Codes</button>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab is-active" data-tab="teach" role="tab" id="tab-teach" aria-controls="pane-teach" aria-selected="true">Teach</button>
+      <button class="tab" data-tab="perform" role="tab" id="tab-perform" aria-controls="pane-perform" aria-selected="false" tabindex="-1">Perform</button>
+      <button class="tab" data-tab="codes" role="tab" id="tab-codes" aria-controls="pane-codes" aria-selected="false" tabindex="-1">Codes</button>
     </nav>
   </header>
 
@@ -51,14 +51,14 @@
 
     <aside class="panel">
       <!-- PERFORM -->
-      <div class="tabpane" data-pane="perform" hidden>
+      <div class="tabpane" data-pane="perform" id="pane-perform" role="tabpanel" aria-labelledby="tab-perform" hidden>
         <h2>Perform</h2>
         <p class="muted">Cover your face with one hand (the circle), move it away and perform a saved code, then cover your face again. The matched word appears above your head and joins your phrase below.</p>
 
         <label class="field">
           <span>Sensitivity <em id="threshVal"></em></span>
           <input id="thresh" type="range" min="0.06" max="0.6" step="0.01" value="0.28" />
-          <small class="muted">Left = stricter match. Right = looser. Watch the live match reading while you calibrate.</small>
+          <small class="muted">A global tightness knob. When a word has several examples the app also auto-calibrates its own threshold from how consistent those examples are; this slider scales that. Left = stricter, right = looser.</small>
         </label>
 
         <label class="field">
@@ -72,6 +72,7 @@
         <button id="holdBtn" class="btn block" hidden>Hold to capture (or hold Space)</button>
 
         <label class="check"><input type="checkbox" id="soundToggle" checked /> Ping on match</label>
+        <label class="check"><input type="checkbox" id="speakToggle" checked /> Speak matched words aloud</label>
 
         <div class="meter">
           <div class="meter-row"><span>Best match</span><b id="bestWord">—</b></div>
@@ -81,13 +82,17 @@
 
         <div class="transcript-head">
           <h3>Phrase</h3>
-          <button id="clearPhrase" class="btn ghost small">Clear</button>
+          <div class="row-actions">
+            <button id="speakPhrase" class="btn ghost small">Speak</button>
+            <button id="undoWord" class="btn ghost small">Undo</button>
+            <button id="clearPhrase" class="btn ghost small">Clear</button>
+          </div>
         </div>
         <div id="phrase" class="phrase" aria-live="polite"></div>
       </div>
 
       <!-- TEACH -->
-      <div class="tabpane" data-pane="teach">
+      <div class="tabpane" data-pane="teach" id="pane-teach" role="tabpanel" aria-labelledby="tab-teach">
         <h2>Teach a new code</h2>
         <ol class="steps muted">
           <li>Type the word or phrase this movement will mean, then click <b>Record movement</b>.</li>
@@ -107,7 +112,7 @@
       </div>
 
       <!-- CODES -->
-      <div class="tabpane" data-pane="codes" hidden>
+      <div class="tabpane" data-pane="codes" id="pane-codes" role="tabpanel" aria-labelledby="tab-codes" hidden>
         <h2>Saved codes</h2>
         <p class="muted">Everything is stored locally in your browser. Click a word (or Play all) to dance along with the ghost skeleton. When a word has several examples, each one can be played or deleted on its own.</p>
         <ul id="codeList" class="code-list"></ul>

@@ -81,7 +81,10 @@ class BlazeBackend {
     const make = (delegate) => PoseLandmarker.createFromOptions(mpFileset, {
       baseOptions: { modelAssetPath: BLAZE_URLS[this.key], delegate },
       runningMode: "VIDEO",
-      numPoses: 3,
+      // 2 is enough to still see and reject a background bystander (the app
+      // keeps the larger, nearer skeleton) while roughly halving the tracking
+      // cost of 3.
+      numPoses: 2,
     });
     try { this.lm = await make("GPU"); }
     catch (e) { console.warn("BlazePose GPU failed, using CPU:", e); this.lm = await make("CPU"); }

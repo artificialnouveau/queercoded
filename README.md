@@ -47,9 +47,13 @@ no build step. `app.js` does all the work:
 
 4. **Matching.** A captured movement is resampled to a fixed 20 frames and
    compared to every saved code with Dynamic Time Warping, which tolerates
-   performing the movement faster or slower than you taught it. If the best
-   match beats the sensitivity threshold, the word fires: it flashes on
-   screen, pings, and joins the phrase strip.
+   performing the movement faster or slower than you taught it. Each word with
+   two or more examples gets its own threshold, auto-calibrated from how
+   consistent those examples are (the sensitivity slider scales it globally),
+   and a match is rejected when a different word is nearly as close, so
+   ambiguous movements do not fire the wrong word. When a match wins, the word
+   flashes above your head, pings, is spoken aloud (toggle in Perform), and
+   joins the phrase strip.
 
 5. **Storage.** Codes live in `localStorage` as JSON (word + 20 normalized
    skeleton frames). They can be exported/imported as JSON files, replayed as
@@ -96,9 +100,10 @@ The URL is remembered in the browser. MoveNet and BlazePose need no setup.
   it away and perform your movement, then cover your face again. It saves by
   itself.
 - **Perform:** same bracket: cover your face, perform a saved code, cover
-  your face again. When it matches, the word appears above your head and
-  joins the phrase strip. Use the sensitivity slider and the live distance
-  readout to calibrate.
+  your face again. When it matches, the word appears above your head, is
+  spoken aloud, and joins the phrase strip. Speak the whole phrase, undo the
+  last word, or clear it with the buttons above the strip. Use the sensitivity
+  slider and the live distance readout to calibrate.
 - **Codes:** play back a whole word or a single example (dance along with the
   ghost skeleton), rename, delete a word or just one of its examples, and
   export/import all codes as JSON.
