@@ -28,13 +28,14 @@ no build step. `app.js` does all the work:
    appear. Each frame is re-centered on the hip midpoint and scaled by torso
    length, so a code works whether you are near or far from the camera.
 
-3. **Segmentation.** The app watches for real motion to start a capture and
-   ends it when you settle: either holding still, or putting a hand over your
-   face (the circle drawn on the video). The face is used because it stays
-   reliably tracked even when a close camera framing crops the lower body.
-   Captures that never really go anywhere (a twitch, tracker jitter) are
-   dropped quietly. The rest at both ends is trimmed so a saved code spans
-   exactly the movement.
+3. **Segmentation.** Recording is bracketed by a hand over your face (the
+   circle drawn on the video): covering your face arms a capture, moving the
+   hand away starts it, and covering your face again stops it. Nothing else
+   can start a recording, so ordinary movement never triggers by accident.
+   The face is used because it stays reliably tracked even when a close
+   camera framing crops the lower body. The moments where your hand is still
+   near your face are trimmed off both ends, so a code spans only the
+   movement in between; captures with no real movement are dropped quietly.
 
 4. **Matching.** A captured movement is resampled to a fixed 20 frames and
    compared to every saved code with Dynamic Time Warping, which tolerates
@@ -61,12 +62,13 @@ Any static server works (`npx serve`, etc.). Allow camera access when prompted.
 
 ## Use
 
-- **Teach:** name a word, click Record. Hold still until the indicator under
-  the video says MOVE, perform your movement, then hold still again. It saves
-  by itself.
-- **Perform:** from rest, perform a saved code and return to rest. When it
-  matches, the word appears and joins the phrase strip. Use the sensitivity
-  slider and the live distance readout to calibrate.
+- **Teach:** name a word, click Record, cover your face with one hand, move
+  it away and perform your movement, then cover your face again. It saves by
+  itself.
+- **Perform:** same bracket: cover your face, perform a saved code, cover
+  your face again. When it matches, the word appears above your head and
+  joins the phrase strip. Use the sensitivity slider and the live distance
+  readout to calibrate.
 - **Codes:** play back, rename, delete, and export/import your codes as JSON.
 
 ### If it says "No clear movement captured"

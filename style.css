@@ -108,21 +108,23 @@ body {
 }
 #video { object-fit: cover; }
 
+/* Matched word, anchored just above the tracked head (left/top set from JS
+   every frame; translate lifts the text fully above the anchor point). */
 .big-word {
   position: absolute;
-  left: 0; right: 0; top: 40%;
+  left: 50%; top: 20%;
+  transform: translate(-50%, -100%) scale(0.9);
+  white-space: nowrap;
   text-align: center;
-  font-size: clamp(28px, 7vw, 68px);
+  font-size: clamp(22px, 5vw, 52px);
   font-weight: 800;
   letter-spacing: -1px;
-  padding: 0 16px;
   opacity: 0;
-  transform: scale(0.9);
   transition: opacity .18s, transform .18s;
   text-shadow: 0 4px 30px rgba(0,0,0,.7);
   pointer-events: none;
 }
-.big-word.show { opacity: 1; transform: scale(1); }
+.big-word.show { opacity: 1; transform: translate(-50%, -100%) scale(1); }
 .big-word b {
   background: var(--grad);
   -webkit-background-clip: text;

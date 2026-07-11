@@ -10,34 +10,17 @@ const FIXED_LEN = 20;             // frames every gesture is resampled to
 const KEY_LMS = [11, 12];         // shoulders: visibility gate
 const NUM_LMS = 33;
 
-// A gesture starts when real MOTION is detected and ends on stillness or the
-// hand-over-face rest pose. Motion-based starting (rather than "not in the
-// rest pose") means standing anywhere doing nothing can never start a capture.
-const MOVE_EPS = 0.12;            // max-landmark displacement that counts as movement...
-const MOVE_WIN_MS = 250;          // ...measured over this look-back window
-const PREROLL_MS = 300;           // include this much pre-movement history in the capture
-const IDLE_BUF_MS = 800;          // rolling history kept while idle
-const REST_SETTLE_FRAMES = 5;     // frames of "rest" that end a capture
-// Holding still ALSO ends a capture (fallback for marginal rest-pose
-// detection). "Still" means the FASTEST single landmark barely moved over a
-// short time window. Max-over-landmarks matters: a one-arm gesture moves only
-// a few of the 33 landmarks, so a mean would read as still mid-gesture.
-// Time-window based so it is frame-rate independent.
-const STILL_WIN_SHORT_MS = 220;   // compare against ~this long ago...
-const STILL_WIN_LONG_MS = 450;    // ...and this long ago (catches oscillation)
-const STILL_EPS = 0.06;           // max-landmark displacement counting as still
-const STILL_CONSEC = 3;           // consecutive still frames required to end
-// A capture only closes as a real gesture once some landmark has travelled
-// this far (torso units) from the capture's starting pose. Below that the
-// "movement" was a twitch or tracker jitter: keep recording a little longer in
-// case the gesture is slow to build, then drop the capture quietly instead of
-// erroring with "no movement". This is what made slow, deliberate movements
-// read as nothing: they tripped the stillness check before covering any
-// distance, and the trimmed capture came back empty.
+// Recording is bracketed by the hand-over-face rest pose: covering your face
+// ARMS a capture, moving the hand away STARTS it, covering again STOPS it.
+// Nothing else starts a recording, so idle movement can never fire a capture.
+// The frames at both ends where the wrist is still near the face (the trip to
+// and from the pose) are trimmed off, so a code spans only the gesture itself.
+// After trimming, a capture must have moved some landmark at least MIN_TRAVEL
+// (torso units) or it is dropped as a false start (face covered and uncovered
+// with no gesture in between).
 const MIN_TRAVEL = 0.3;
-const FALSE_START_FRAMES = 20;    // settled frames after which a low-travel capture is dropped
-const MAX_SEG_MS = 6000;          // abandon a capture that never returns to rest
-const MAX_TEACH_MS = 8000;        // safety cap so a teaching capture can't hang
+const MAX_SEG_MS = 10000;         // abandon a capture that never returns to the face
+const MAX_TEACH_MS = 12000;       // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
 const COOLDOWN_MS = 1200;         // min gap before the same word fires again
 
@@ -91,34 +74,7 @@ let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
 
 function newSeg() {
-  return { state: "idle", buf: [], frames: [], rest: [], times: [], restCount: 0, stillCount: 0, startedAt: 0, startVec: null, travel: 0 };
-}
-
-// Rolling idle-history helpers. The buffer holds {vec, rest, t} entries so a
-// capture can start on detected motion and still include a short preroll.
-function pushIdle(buf, vec, rest, t) {
-  buf.push({ vec, rest, t });
-  while (buf.length && buf[0].t < t - IDLE_BUF_MS) buf.shift();
-}
-
-// True when some landmark has moved meaningfully within the look-back window.
-function isMovingNow(buf, now) {
-  const last = buf[buf.length - 1];
-  for (let i = buf.length - 2; i >= 0; i--) {
-    if (now - buf[i].t >= MOVE_WIN_MS) return maxPoseDist(last.vec, buf[i].vec) > MOVE_EPS;
-  }
-  return false; // not enough history yet
-}
-
-// Seed a capture from the idle buffer: everything from PREROLL_MS before now.
-function prerollFrom(buf, now) {
-  const start = now - PREROLL_MS;
-  const picked = buf.filter((e) => e.t >= start);
-  return {
-    frames: picked.map((e) => e.vec),
-    rest: picked.map((e) => e.rest),
-    times: picked.map((e) => e.t),
-  };
+  return { state: "idle", frames: [], near: [], startedAt: 0 };
 }
 
 // Largest single-landmark displacement between two pose vectors.
@@ -131,46 +87,23 @@ function maxPoseDist(a, b) {
   return m;
 }
 
-// True when no landmark has moved meaningfully over the recent time window.
-// Checks two lags so a periodic movement (a wave returning to the same pose)
-// is not mistaken for stillness.
-function isStillNow(frames, times, now) {
-  const last = frames[frames.length - 1];
-  let iShort = -1, iLong = -1;
-  for (let i = times.length - 1; i >= 0; i--) {
-    if (iShort < 0 && times[i] <= now - STILL_WIN_SHORT_MS) iShort = i;
-    if (times[i] <= now - STILL_WIN_LONG_MS) { iLong = i; break; }
-  }
-  if (iLong < 0) return false; // capture younger than the long window
-  return (
-    maxPoseDist(last, frames[iShort]) < STILL_EPS &&
-    maxPoseDist(last, frames[iLong]) < STILL_EPS
-  );
+// Drop the leading/trailing frames where a wrist was still near the face, so
+// the capture spans the gesture itself rather than the trips to and from the
+// rest pose. Mid-gesture passes near the face are kept (ends only).
+function trimNearFace(frames, near) {
+  let a = 0, b = frames.length;
+  while (a < b - 1 && near[a]) a++;
+  while (b > a + 1 && near[b - 1]) b--;
+  return frames.slice(a, b);
 }
 
-// Capture trim shared by teach and perform: drop leading preroll/rest frames
-// and trailing rest/settle frames so a capture spans exactly the movement.
-// Both ends are bounded so slow deliberate starts and endings are not eaten.
-function trimCapture(frames, rest, times) {
-  // Leading: frames still matching the starting pose, within the preroll span.
-  let a = 0;
-  const first = frames[0];
-  while (a < frames.length - 1) {
-    if (rest[a]) { a++; continue; }
-    const withinWindow = times[a] - times[0] <= PREROLL_MS + STILL_WIN_SHORT_MS;
-    if (withinWindow && maxPoseDist(frames[a], first) < STILL_EPS) { a++; continue; }
-    break;
-  }
-  // Trailing: frames matching the final settle pose, within the settle span.
-  let b = frames.length;
-  const last = frames[b - 1];
-  while (b > a + 1) {
-    if (rest[b - 1]) { b--; continue; }
-    const withinWindow = times[frames.length - 1] - times[b - 1] <= STILL_WIN_LONG_MS + STILL_WIN_SHORT_MS;
-    if (withinWindow && maxPoseDist(frames[b - 1], last) < STILL_EPS) { b--; continue; }
-    break;
-  }
-  return frames.slice(a, b);
+// How far the pose ever strays from its first frame. Used to reject captures
+// where the face was covered and uncovered with no gesture in between.
+function travelOf(frames) {
+  if (frames.length === 0) return 0;
+  let m = 0;
+  for (const f of frames) m = Math.max(m, maxPoseDist(f, frames[0]));
+  return m;
 }
 
 // ---------- Geometry ----------
@@ -211,7 +144,16 @@ function keyLandmarksVisible(lms) {
 const REST_ENTER = 0.55;  // wrist-to-face distance (in shoulder widths) to enter rest
 const REST_EXIT = 0.8;    // distance to leave rest once in it
 const FACE_LMS = [0, 7, 8]; // nose + ears
+// The trip to and from the face is not part of the gesture. Frames at either
+// end of a capture where a wrist is within this radius of the face are
+// trimmed, so a code spans the movement itself, not the rest-pose transitions.
+const NEAR_FACE_R = 1.0;
+// Rest only flips state after this many consecutive frames agree, on top of
+// the enter/exit hysteresis. Kills single-frame flicker when the covering
+// hand makes the face landmarks jump.
+const REST_DEBOUNCE = 2;
 let wasResting = false;
+let restStreak = 0;
 let restInfo = null;      // per-frame info for drawing the face target circle
 
 function isResting(lms) {
@@ -231,9 +173,21 @@ function isResting(lms) {
   const dR = (rw?.visibility ?? 0) > 0.2 ? Math.hypot(rw.x - anchor.x, rw.y - anchor.y) / scale : Infinity;
   const d = Math.min(dL, dR);
   const thr = wasResting ? REST_EXIT : REST_ENTER;
-  wasResting = d < thr;
+  const inRange = d < thr;
+  if (inRange !== wasResting) {
+    restStreak++;
+    if (restStreak >= REST_DEBOUNCE) { wasResting = inRange; restStreak = 0; }
+  } else {
+    restStreak = 0;
+  }
   restInfo = { anchor, scale, d };
   return wasResting;
+}
+
+// True while a wrist is anywhere near the face: wider than the rest radius so
+// it also covers the approach/departure frames around the rest pose.
+function isNearFace() {
+  return restInfo ? restInfo.d < NEAR_FACE_R : false;
 }
 
 // Visual guide: a circle over the face that lights up when a wrist is close
@@ -310,9 +264,9 @@ function newId() { return "c_" + Math.random().toString(36).slice(2, 9) + perfor
 // accurate but can drop the frame rate on slower machines.
 const MODEL_BASE = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/";
 const MODELS = {
-  lite:  { label: "MediaPipe Pose Landmarker Lite",  url: MODEL_BASE + "pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
-  full:  { label: "MediaPipe Pose Landmarker Full",  url: MODEL_BASE + "pose_landmarker_full/float16/1/pose_landmarker_full.task" },
-  heavy: { label: "MediaPipe Pose Landmarker Heavy", url: MODEL_BASE + "pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task" },
+  lite:  { label: "MediaPipe BlazePose Lite",  url: MODEL_BASE + "pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+  full:  { label: "MediaPipe BlazePose Full",  url: MODEL_BASE + "pose_landmarker_full/float16/1/pose_landmarker_full.task" },
+  heavy: { label: "MediaPipe BlazePose Heavy", url: MODEL_BASE + "pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task" },
 };
 const MODEL_STORE_KEY = "queercoded.model.v1";
 let modelChoice = localStorage.getItem(MODEL_STORE_KEY);
@@ -352,7 +306,7 @@ async function switchModel(key) {
   statusEl.textContent = `Loading ${MODELS[key].label} model…`;
   try {
     await initPose();
-    setPerformState("rest");
+    setPerformState();
   } catch (e) {
     console.error(e);
     statusEl.textContent = "Could not load the " + MODELS[key].label + " model: " + e.message;
@@ -388,19 +342,34 @@ function loop() {
         bodyVisible = true;
         const vec = normalizePose(lms);
         restNow = isResting(lms);
+        const nearNow = isNearFace();
         if (teach) {
-          teachStep(vec, restNow, now);
+          teachStep(vec, restNow, nearNow, now);
         } else if (triggerMode === "manual") {
           if (manualCapturing) manualFrames.push(vec);
         } else {
-          segmentStep(vec, restNow, now);
+          segmentStep(vec, restNow, nearNow, now);
         }
-        // Face target circle: visible whenever a movement could start or a
-        // rest pose would end one, so the pose threshold is never a guess.
-        const capturing = teach ? teach.state === "capturing" && teach.manual : false;
-        if (triggerMode === "auto" && !playback && !capturing) drawRestTargets();
+        // Face target circle: the start/stop control, so always visible in
+        // auto mode (except during ghost playback).
+        if (triggerMode === "auto" && !playback) drawRestTargets();
+      }
+
+      // Keep the matched word floating just above the head. The video is
+      // mirrored, so x flips; y is clamped so the word stays inside the frame.
+      const nose = lms[0];
+      if (nose) {
+        const topY = Math.max(0.14, Math.min(...FACE_LMS.map((i) => lms[i]?.y ?? 1)) - 0.05);
+        bigWord.style.left = ((1 - nose.x) * 100).toFixed(1) + "%";
+        bigWord.style.top = (topY * 100).toFixed(1) + "%";
       }
     }
+
+    // While recording, the screen belongs to the movement: hide any matched
+    // word that is still showing.
+    const recording = seg.state === "recording" || manualCapturing ||
+      (teach && (teach.manual || teach.state === "capturing"));
+    if (recording) bigWord.classList.remove("show");
 
     // The teach overlay is driven here, EVERY frame, not inside the
     // detection-gated branch. Otherwise losing sight of the body freezes the
@@ -419,55 +388,40 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
-// ---------- Motion-delimited segmentation ----------
-function segmentStep(vec, rest, now) {
+// ---------- Hand-over-face bracketed segmentation ----------
+// idle: waiting for the face to be covered. armed: hand is on the face; the
+// capture starts the moment it leaves. recording: collecting frames until the
+// hand covers the face again.
+function segmentStep(vec, rest, near, now) {
   if (seg.state === "idle") {
-    pushIdle(seg.buf, vec, rest, now);
-    if (isMovingNow(seg.buf, now)) {
-      const pre = prerollFrom(seg.buf, now);
-      seg.state = "move";
-      seg.frames = pre.frames;
-      seg.rest = pre.rest;
-      seg.times = pre.times;
+    if (rest) seg.state = "armed";
+    setPerformState();
+    return;
+  }
+  if (seg.state === "armed") {
+    if (!rest) {
+      seg.state = "recording";
+      seg.frames = [vec];
+      seg.near = [near];
       seg.startedAt = now;
-      seg.restCount = 0;
-      seg.stillCount = 0;
-      seg.startVec = pre.frames[0] || vec;
-      seg.travel = 0;
     }
-    setPerformState("rest");
+    setPerformState();
     return;
   }
-
-  // state === "move"
+  // recording
   seg.frames.push(vec);
-  seg.rest.push(rest);
-  seg.times.push(now);
-  seg.travel = Math.max(seg.travel, maxPoseDist(vec, seg.startVec));
-  seg.stillCount = isStillNow(seg.frames, seg.times, now) ? seg.stillCount + 1 : 0;
-  if (rest) seg.restCount++;
-  else seg.restCount = 0;
-  const settled = seg.restCount >= REST_SETTLE_FRAMES || seg.stillCount >= STILL_CONSEC;
-  if (settled && seg.travel >= MIN_TRAVEL) {
-    closeSegment(now);
-    return;
-  }
-  // Settled but never travelled: a twitch armed the capture. Wait a little in
-  // case the movement is slow to build, then drop it without matching.
-  if (seg.restCount >= FALSE_START_FRAMES || seg.stillCount >= FALSE_START_FRAMES) {
-    seg = newSeg();
-    setPerformState("rest");
-    return;
-  }
-  if (now - seg.startedAt > MAX_SEG_MS) { seg = newSeg(); setPerformState("rest"); return; }
-  setPerformState("move");
+  seg.near.push(near);
+  if (rest) { closeSegment(now); return; }
+  if (now - seg.startedAt > MAX_SEG_MS) { seg = newSeg(); setPerformState(); return; }
+  setPerformState();
 }
 
 function closeSegment(now) {
-  const frames = trimCapture(seg.frames, seg.rest, seg.times);
+  const frames = trimNearFace(seg.frames, seg.near);
   seg = newSeg();
-  setPerformState("rest");
-  if (frames.length >= MIN_SEG_FRAMES) matchAndFire(frames, now);
+  seg.state = "armed"; // the hand is on the face right now
+  setPerformState();
+  if (frames.length >= MIN_SEG_FRAMES && travelOf(frames) >= MIN_TRAVEL) matchAndFire(frames, now);
 }
 
 function matchAndFire(frames, now) {
@@ -489,10 +443,16 @@ function matchAndFire(frames, now) {
   }
 }
 
-function setPerformState(s) {
+// Status text is derived from the live segmentation and trigger state.
+function setPerformState() {
   if (!landmarker) return;
-  if (s === "move") { statusEl.textContent = "● capturing movement…"; return; }
-  statusEl.textContent = triggerMode === "manual" ? "● ready — hold to capture" : "● watching — perform a code";
+  if (triggerMode === "manual") {
+    statusEl.textContent = manualCapturing ? "● capturing movement…" : "● ready. Hold the button to capture.";
+    return;
+  }
+  if (seg.state === "recording") statusEl.textContent = "● recording. Cover your face to finish.";
+  else if (seg.state === "armed") statusEl.textContent = "Hand on face. Move it away and perform a code.";
+  else statusEl.textContent = "● watching. Cover your face with one hand to start.";
 }
 
 function fireWord(word, now) {
@@ -530,14 +490,14 @@ function startManual() {
   if (teach || triggerMode !== "manual" || manualCapturing) return;
   manualCapturing = true;
   manualFrames = [];
-  setPerformState("move");
+  setPerformState();
   holdBtn.classList.add("recording");
 }
 function stopManual() {
   if (!manualCapturing) return;
   manualCapturing = false;
   holdBtn.classList.remove("recording");
-  setPerformState("rest");
+  setPerformState();
   const frames = manualFrames;
   manualFrames = [];
   if (frames.length >= MIN_SEG_FRAMES) matchAndFire(frames, performance.now());
@@ -572,9 +532,8 @@ async function startTeach() {
   const manual = triggerMode === "manual";
   teach = {
     word, manual,
-    state: "prime",          // prime -> ready -> capturing (manual jumps straight to capturing)
-    buf: [], frames: [], rest: [], times: [], restCount: 0, stillCount: 0,
-    startVec: null, travel: 0,
+    state: "prime",          // prime -> armed -> capturing (manual jumps straight to capturing)
+    frames: [], near: [],
     startedAt: performance.now(),
   };
   recordBtn.disabled = false;
@@ -586,64 +545,36 @@ async function startTeach() {
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
   } else {
     recordBtn.textContent = "Cancel";
-    setTeachMsg("Hold still (or cover your face with one hand), perform your movement, then cover your face or hold still to finish.", "");
+    setTeachMsg("Cover your face with one hand. Recording starts when you move it away and stops when you cover your face again.", "");
   }
 }
 
-// One frame of a teaching capture. Mirrors Perform: wait for rest, start on
-// movement, end when the body returns to rest. No fixed time limit.
-function teachStep(vec, rest, now) {
+// One frame of a teaching capture. Mirrors Perform: cover the face to arm,
+// move the hand away to start recording, cover again to finish and save.
+function teachStep(vec, rest, near, now) {
   const t = teach;
   if (t.manual) {
     t.frames.push(vec);
-    t.rest.push(rest);
-    t.times.push(now);
+    t.near.push(near);
     return;
   }
-  if (t.state === "prime") {
-    // Settle first: a hand over the face, or simply holding still for a beat.
-    pushIdle(t.buf, vec, rest, now);
-    const spans = t.buf.length > 1 && now - t.buf[0].t >= STILL_WIN_LONG_MS;
-    if (rest || (spans && !isMovingNow(t.buf, now))) t.state = "ready";
+  if (t.state === "prime") {  // waiting for the hand to cover the face
+    if (rest) t.state = "armed";
     return;
   }
-  if (t.state === "ready") {
-    pushIdle(t.buf, vec, rest, now);
-    if (isMovingNow(t.buf, now)) {
-      const pre = prerollFrom(t.buf, now);
+  if (t.state === "armed") {  // hand on face; recording starts when it leaves
+    if (!rest) {
       t.state = "capturing";
-      t.frames = pre.frames;
-      t.rest = pre.rest;
-      t.times = pre.times;
-      t.restCount = 0;
-      t.stillCount = 0;
-      t.startVec = pre.frames[0] || vec;
-      t.travel = 0;
+      t.frames = [vec];
+      t.near = [near];
       t.startedAt = now;
     }
     return;
   }
   // capturing
   t.frames.push(vec);
-  t.rest.push(rest);
-  t.times.push(now);
-  t.travel = Math.max(t.travel, maxPoseDist(vec, t.startVec));
-  t.stillCount = isStillNow(t.frames, t.times, now) ? t.stillCount + 1 : 0;
-  if (rest) t.restCount++;
-  else t.restCount = 0;
-  const settled = t.restCount >= REST_SETTLE_FRAMES || t.stillCount >= STILL_CONSEC;
-  if (settled && t.travel >= MIN_TRAVEL) {
-    finishTeach(now, false);
-    return;
-  }
-  // Settled but never travelled: false start. Go back to waiting for the real
-  // movement instead of failing the whole recording with an error.
-  if (t.restCount >= FALSE_START_FRAMES || t.stillCount >= FALSE_START_FRAMES) {
-    t.state = "ready";
-    t.buf = [];
-    t.frames = []; t.rest = []; t.times = [];
-    t.restCount = 0; t.stillCount = 0; t.travel = 0;
-  }
+  t.near.push(near);
+  if (rest) finishTeach(now, false);
 }
 
 // On-screen overlay for the teach flow, driven every frame so it can also say
@@ -663,18 +594,16 @@ function updateTeachUI(bodyVisible, rest) {
     countdownEl.classList.add("rec");
     statusEl.textContent = t.manual
       ? "Recording. Click Stop & save when done."
-      : rest
-        ? "Recording. Keep your hand over your face to finish…"
-        : "Recording. When your movement is done, hold still or cover your face and it saves itself.";
+      : "Recording. Cover your face with one hand to finish and save.";
     return;
   }
   countdownEl.classList.remove("rec");
   if (t.state === "prime") {
-    countdownEl.textContent = "REST";
-    statusEl.textContent = "Step 1 of 2: hold still for a moment (a hand over your face works too).";
-  } else { // ready
-    countdownEl.textContent = "MOVE";
-    statusEl.textContent = "Step 2 of 2: perform your movement now, then hold still.";
+    countdownEl.textContent = "COVER";
+    statusEl.textContent = "Step 1 of 2: cover your face with one hand (the circle).";
+  } else { // armed
+    countdownEl.textContent = "SET";
+    statusEl.textContent = "Step 2 of 2: move your hand away and perform. Cover your face again to finish.";
   }
 }
 
@@ -685,19 +614,16 @@ function finishTeach(now, timedOut = false) {
   countdownEl.classList.remove("rec");
   recordBtn.disabled = false;
   recordBtn.textContent = "Record movement";
-  setPerformState("rest");
+  setPerformState();
 
   // Trim leading rest and trailing rest/stillness so every code starts and
   // ends where the movement actually happened.
-  const core = t.frames.length ? trimCapture(t.frames, t.rest, t.times) : [];
+  const core = trimNearFace(t.frames, t.near);
 
   // Same travel gate as segmentation, applied to manual and timed-out
   // recordings too: a capture that never really went anywhere is not a code.
-  let travel = 0;
-  for (const f of core) travel = Math.max(travel, maxPoseDist(f, core[0]));
-
-  if (core.length < 3 || travel < MIN_TRAVEL) {
-    setTeachMsg("No clear movement captured. Check the skeleton overlay is tracking your whole upper body, then try a bigger movement.", "warn");
+  if (core.length < 3 || travelOf(core) < MIN_TRAVEL) {
+    setTeachMsg("No clear movement captured. Check the skeleton overlay is tracking you, then try a bigger movement between covering your face.", "warn");
     return;
   }
   const durMs = Math.max(300, Math.round(now - t.startedAt));
@@ -709,7 +635,7 @@ function finishTeach(now, timedOut = false) {
   let msg = n > 1
     ? `Saved example ${n} for “${t.word}”. More examples improve recognition.`
     : `Saved “${t.word}”. Switch to Perform to try it.`;
-  if (timedOut) msg += " (Recording hit its time cap; neither stillness nor a hand over your face was detected to end it.)";
+  if (timedOut) msg += " (Recording hit its time cap; covering your face to finish was never detected.)";
   setTeachMsg(msg, "ok");
   wordInput.value = "";
 }
@@ -720,7 +646,7 @@ function cancelTeach() {
   countdownEl.classList.remove("rec");
   recordBtn.disabled = false;
   recordBtn.textContent = "Record movement";
-  setPerformState("rest");
+  setPerformState();
   setTeachMsg("Cancelled.", "");
 }
 
@@ -742,7 +668,7 @@ function startPlayback(word) {
 
 function stopPlayback() {
   playback = null;
-  if (landmarker) setPerformState("rest");
+  if (landmarker) setPerformState();
   renderCodeList();
 }
 
@@ -906,7 +832,7 @@ triggerModeSel.addEventListener("change", () => {
   holdBtn.hidden = triggerMode !== "manual";
   manualCapturing = false;
   seg = newSeg();
-  setPerformState("rest");
+  setPerformState();
 });
 soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
 modelSel.addEventListener("change", () => switchModel(modelSel.value));
@@ -959,7 +885,7 @@ function escapeHtml(s) {
     ready = true;
     clearTimeout(slow);
     statusEl.textContent = "Ready.";
-    setPerformState("rest");
+    setPerformState();
     loop();
   } catch (err) {
     clearTimeout(slow);

@@ -67,11 +67,12 @@ remove that:
 
 ## The resting pose (gesture boundaries)
 
-Gestures are **motion-delimited**: a capture starts when real movement is
-detected (the fastest landmark travels past a threshold within a short window,
-with a ~300 ms preroll so the start of the movement is kept) and ends on
-**stillness** (~0.5 s of no landmark motion) or on the **hand-over-face rest
-pose**. Standing around doing nothing can never start a capture. For anyone who
+Gestures are **bracketed by the hand-over-face rest pose**: covering the face
+arms a capture, moving the hand away starts it, and covering the face again
+ends it. Nothing else can start a recording, so ordinary movement never fires
+by accident. Frames at either end where a wrist is still near the face (the
+trip to and from the pose) are trimmed, and a capture whose trimmed frames
+never travel a minimum distance is dropped as a false start. For anyone who
 prefers explicit control, a **Manual trigger** mode (hold a button or Spacebar)
 captures instead.
 
@@ -86,15 +87,15 @@ is visible rather than guessed. Only the upper body (face, shoulders, wrists,
 and roughly-estimated hips for normalization) needs to be in frame, so close
 framing and seated use both work.
 
-- **Perform:** a small state machine. In `rest`, leaving rest for a couple of
-  frames starts a capture. In `move`, returning to rest for a few frames ends
-  it. The trailing rest frames are trimmed, then the captured movement is
-  matched. A capture that never returns to rest is abandoned after 6 s.
-- **Teach:** uses the same movement-delimited capture as Perform (no fixed
-  timer). After you hit record it waits until you are at rest, starts capturing
-  when you move, and ends when you return to rest. Leading and trailing rest is
-  trimmed, so every stored template begins and ends at the same neutral pose.
-  In Manual trigger mode the record button becomes a start/stop toggle.
+- **Perform:** a small state machine: `idle` (waiting for the face to be
+  covered) -> `armed` (hand on face) -> `recording` (hand moved away) -> back
+  to `armed` when the face is covered again, which trims and matches the
+  capture. A capture that never returns to the face is abandoned after 10 s.
+- **Teach:** the identical bracket. After the countdown it waits for the hand
+  on the face, records from the moment it leaves, and saves when the face is
+  covered again. Near-face frames are trimmed from both ends, so every stored
+  template spans only the movement itself. In Manual trigger mode the record
+  button becomes a start/stop toggle.
 
 ---
 

@@ -31,9 +31,9 @@
       <div class="model-row">
         <label for="modelSel">Tracking model</label>
         <select id="modelSel">
-          <option value="lite">MediaPipe Pose Landmarker Lite — fastest, least accurate</option>
-          <option value="full">MediaPipe Pose Landmarker Full — recommended for dance</option>
-          <option value="heavy">MediaPipe Pose Landmarker Heavy — most accurate, needs a fast computer</option>
+          <option value="lite">MediaPipe BlazePose Lite (fastest, least accurate)</option>
+          <option value="full">MediaPipe BlazePose Full (recommended for dance)</option>
+          <option value="heavy">MediaPipe BlazePose Heavy (most accurate, needs a fast computer)</option>
         </select>
       </div>
     </section>
@@ -42,7 +42,7 @@
       <!-- PERFORM -->
       <div class="tabpane" data-pane="perform" hidden>
         <h2>Perform</h2>
-        <p class="muted">Hold still, then perform a saved code. Freeze or put a hand over your face (the circle) to trigger the match. The matched word appears on screen and joins your phrase below.</p>
+        <p class="muted">Cover your face with one hand (the circle), move it away and perform a saved code, then cover your face again. The matched word appears above your head and joins your phrase below.</p>
 
         <label class="field">
           <span>Sensitivity <em id="threshVal"></em></span>
@@ -53,8 +53,8 @@
         <label class="field">
           <span>Trigger</span>
           <select id="triggerMode">
-            <option value="auto">Auto — return to rest pose (hand over face)</option>
-            <option value="manual">Manual — hold the button or Spacebar</option>
+            <option value="auto">Auto (cover your face to start and stop)</option>
+            <option value="manual">Manual (hold the button or Spacebar)</option>
           </select>
           <small class="muted">Manual mode is a fallback if the rest pose is hard to reach or detect.</small>
         </label>
@@ -79,11 +79,11 @@
       <div class="tabpane" data-pane="teach">
         <h2>Teach a new code</h2>
         <ol class="steps muted">
-          <li>Type the word or phrase this movement will mean.</li>
-          <li>Click <b>Record movement</b> and hold still until the indicator under the video says <b>MOVE</b>.</li>
-          <li>Perform your movement, then hold still again. It saves by itself; no clicking needed.</li>
+          <li>Type the word or phrase this movement will mean, then click <b>Record movement</b>.</li>
+          <li>Cover your face with one hand. Recording starts the moment you move it away.</li>
+          <li>Perform your movement, then cover your face again. It saves by itself; no clicking needed.</li>
         </ol>
-        <p class="muted">The pauses are trimmed automatically. Record the same word more than once to add examples and make it easier to recognize.</p>
+        <p class="muted">The hand-to-face moments are trimmed automatically, so only the movement in between is saved. Record the same word more than once to add examples and make it easier to recognize.</p>
 
         <label class="field">
           <span>Word or phrase</span>
