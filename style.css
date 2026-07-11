@@ -62,6 +62,19 @@ body {
 .logo .sp { width: .3em; display: inline-block; }
 .tagline { margin: 2px 0 10px; color: var(--muted); font-size: 13px; }
 
+/* Horizontal / vertical switch, pinned to the header so it is always
+   reachable, especially FROM the rotated mode. */
+.orient {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.orient label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.orient select { width: auto; padding: 6px 10px; font-size: 13px; }
+
 .tabs { display: flex; gap: 6px; }
 .tab {
   background: transparent;
@@ -252,7 +265,6 @@ body {
 }
 .model-row label { font-size: 13px; color: var(--muted); white-space: nowrap; }
 .model-row select { width: auto; flex: 1; max-width: 420px; }
-.model-row #orientSel { flex: 0 0 auto; }
 
 .panel {
   background: var(--panel);

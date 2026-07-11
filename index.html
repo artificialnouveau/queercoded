@@ -27,6 +27,13 @@
   <button id="headerToggle" class="header-toggle" hidden>Menu</button>
 
   <header class="topbar">
+    <div class="orient">
+      <label for="orientSel">Layout</label>
+      <select id="orientSel">
+        <option value="landscape">Horizontal</option>
+        <option value="rotated">Vertical (rotated 90)</option>
+      </select>
+    </div>
     <h1 class="logo" aria-label="Queer Coded"><span aria-hidden="true"><i style="color:#E40303">Q</i><i style="color:#FF8C00">u</i><i style="color:#FFED00">e</i><i style="color:#008026">e</i><i style="color:#004DFF">r</i><i class="sp"> </i><i style="color:#750787">C</i><i style="color:#E40303">o</i><i style="color:#FF8C00">d</i><i style="color:#008026">e</i><i style="color:#004DFF">d</i></span></h1>
     <p class="tagline">Code a movement. Move to speak.</p>
     <nav class="tabs" role="tablist" aria-label="Sections">
@@ -71,11 +78,6 @@
           <optgroup label="YOLO-Pose / ONNX Runtime Web (17 points)">
             <option value="yolo">YOLO-Pose (needs a model file)</option>
           </optgroup>
-        </select>
-        <label for="orientSel">Layout</label>
-        <select id="orientSel">
-          <option value="landscape">Landscape</option>
-          <option value="rotated">Vertical (rotated 90)</option>
         </select>
       </div>
     </section>

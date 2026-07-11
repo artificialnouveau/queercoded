@@ -720,6 +720,27 @@ const MAX_MOVE_MS = 7000;
 const perfBuf = [];               // {vec, t}
 let moving = false, moveStart = 0, lastActive = 0;
 
+// The performer's neutral stance, learned as a slow average of the pose
+// whenever the body is still. Codes start and end near neutral, so a segment
+// that never DEVIATES far from the current neutral (a posture shift, a sway,
+// settling after a move) is rejected outright: resting is never a dance move.
+let restPose = null;
+const REST_LEARN = 0.02;   // per-frame blend while still (~1s half-life at 30fps)
+const REST_DEV_MIN = 0.2;  // a real move must stray at least this far from neutral
+function learnRestPose(vec, sp) {
+  if (moving || sp > MOVE_END) return;
+  if (!restPose) { restPose = vec.slice(); return; }
+  for (let i = 0; i < vec.length; i++) restPose[i] += (vec[i] - restPose[i]) * REST_LEARN;
+}
+function maxDevFrom(frames, ref) {
+  let m = 0;
+  for (const f of frames) { const d = poseDist(f, ref); if (d > m) m = d; }
+  return m;
+}
+// After ANY word fires, nothing may fire for this long: the settle back to
+// neutral is itself a motion and must not trigger a second (different) word.
+const FIRE_GAP_MS = 900;
+
 function perfPush(vec, now) {
   perfBuf.push({ vec, t: now });
   while (perfBuf.length && perfBuf[0].t < now - PERF_BUF_MS) perfBuf.shift();
@@ -805,6 +826,7 @@ function showScore(ranked) {
 function performStep(vec, now) {
   perfPush(vec, now);
   const sp = speedNow(now);
+  learnRestPose(vec, sp);
 
   if (!moving) {
     if (sp > MOVE_START) { moving = true; moveStart = now - SPEED_WIN_MS; lastActive = now; }
@@ -818,7 +840,10 @@ function performStep(vec, now) {
   // hint) waits until the segment has lasted and TRAVELLED like a real move;
   // otherwise standing still keeps flashing "closest" guesses.
   const soFar = framesInRange(moveStart, now);
-  if (now - moveStart >= MIN_MOVE_MS && travelOf(soFar) >= MIN_ACTIVE_TRAVEL) {
+  const looksReal = now - moveStart >= MIN_MOVE_MS
+    && travelOf(soFar) >= MIN_ACTIVE_TRAVEL
+    && (!restPose || maxDevFrom(soFar, restPose) >= REST_DEV_MIN);
+  if (looksReal) {
     const inProgress = scoreSegment(soFar);
     if (inProgress) showScore(inProgress);
   } else {
@@ -833,7 +858,8 @@ function performStep(vec, now) {
   // Move complete: match the whole segment (start to when motion stopped).
   moving = false;
   const segFrames = framesInRange(moveStart, lastActive);
-  if (now - moveStart < MIN_MOVE_MS || travelOf(segFrames) < MIN_ACTIVE_TRAVEL) {
+  if (now - moveStart < MIN_MOVE_MS || travelOf(segFrames) < MIN_ACTIVE_TRAVEL
+      || (restPose && maxDevFrom(segFrames, restPose) < REST_DEV_MIN)) {
     barEl.style.width = "0%"; hideClosest(); return;
   }
   const ranked = scoreSegment(segFrames);
@@ -841,7 +867,8 @@ function performStep(vec, now) {
   const { best, second, thresh } = showScore(ranked);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
   if (best.dist < thresh && !ambiguous) {
-    const ok = best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS;
+    const ok = now - lastFireAt > FIRE_GAP_MS
+      && (best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS);
     if (ok) fireWord(best.word, now);
   }
 }
@@ -1728,21 +1755,16 @@ triggerModeSel.addEventListener("change", () => {
 });
 soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; });
 
-// Landscape vs vertical presentation, remembered across visits. Vertical
-// rotates the ENTIRE page 90 degrees clockwise (pure CSS on <body>), for a
-// monitor physically turned on its side.
+// Horizontal vs vertical presentation. Vertical rotates the ENTIRE page 90
+// degrees clockwise (pure CSS on <body>) for a monitor physically turned on
+// its side. Always starts horizontal; the switch lives in the header so it
+// stays reachable from either mode.
 const orientSel = document.getElementById("orientSel");
-const ORIENT_KEY = "queercoded.orientation.v1";
+localStorage.removeItem("queercoded.orientation.v1"); // orientation no longer persists
 function applyOrientation(mode) {
   document.body.classList.toggle("rot90", mode === "rotated");
 }
-const savedOrient = localStorage.getItem(ORIENT_KEY) === "rotated" ? "rotated" : "landscape";
-orientSel.value = savedOrient;
-applyOrientation(savedOrient);
-orientSel.addEventListener("change", () => {
-  localStorage.setItem(ORIENT_KEY, orientSel.value);
-  applyOrientation(orientSel.value);
-});
+orientSel.addEventListener("change", () => applyOrientation(orientSel.value));
 
 speakToggle.addEventListener("change", () => {
   speakOn = speakToggle.checked;
