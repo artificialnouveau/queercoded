@@ -70,6 +70,7 @@ let backend = null;   // active pose backend (see backends.js)
 let ready = false;    // backend loaded and detecting
 let templates = loadTemplates();
 let teach = null;     // active teaching capture (movement-delimited)
+let currentTab = "teach"; // recognition runs ONLY while the Perform tab is active
 let lastFireAt = 0;
 let lastFiredWord = "";
 let phrase = [];
@@ -642,11 +643,15 @@ async function runFrame() {
         const nearNow = isNearFace();
         if (teach) {
           teachStep(vec, hands, nearNow, now);
-        } else if (triggerMode === "manual") {
-          if (manualCapturing) manualFrames.push(vec);
-        } else {
-          // Perform is continuous but fires only when a whole move completes.
-          performStep(vec, now);
+        } else if (currentTab === "perform") {
+          // Recognition belongs to the Perform tab only: on Teach or Codes an
+          // idle body must never fire (or even score) matches.
+          if (triggerMode === "manual") {
+            if (manualCapturing) manualFrames.push(vec);
+          } else {
+            // Perform is continuous but fires only when a whole move completes.
+            performStep(vec, now);
+          }
         }
         // Face target circle + R/L hand labels belong to Teach only.
         if (teach && !teach.manual && !playback) { drawRestTargets(); drawHandLabels(lms); }
@@ -986,9 +991,17 @@ function matchAndFire(frames, now) {
   }
 }
 
-// Status text for the Perform tab.
+// Status text under the video, per tab. Only Perform "watches".
 function setPerformState() {
   if (!ready) return;
+  if (currentTab === "teach") {
+    statusEl.textContent = "● ready. Type a word and click Record movement to teach a code.";
+    return;
+  }
+  if (currentTab !== "perform") {
+    statusEl.textContent = "● ready.";
+    return;
+  }
   if (triggerMode === "manual") {
     statusEl.textContent = manualCapturing ? "● capturing movement…" : "● ready. Hold the button to capture.";
     return;
@@ -1722,6 +1735,7 @@ headerToggle.addEventListener("click", () => {
 const tabs = [...document.querySelectorAll(".tab")];
 function activateTab(tab, focus = false) {
   const name = tab.dataset.tab;
+  currentTab = name;
   for (const t of tabs) {
     const on = t === tab;
     t.classList.toggle("is-active", on);
@@ -1749,6 +1763,7 @@ function activateTab(tab, focus = false) {
   manualCapturing = false;
   moving = false; // drop any half-finished Perform move
   hideClosest();
+  barEl.style.width = "0%";
   if (ready) setPerformState();
   if (focus) tab.focus();
 }
@@ -1837,7 +1852,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queer Coded build v6 (2026-07-11)");
+  console.log("Queer Coded build v7 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
