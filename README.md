@@ -36,14 +36,15 @@ no build step. `app.js` does all the work:
    appear. Each frame is re-centered on the hip midpoint and scaled by torso
    length, so a code works whether you are near or far from the camera.
 
-3. **Segmentation.** Recording is bracketed by a hand over your face (the
-   circle drawn on the video): covering your face arms a capture, moving the
-   hand away starts it, and covering your face again stops it. Nothing else
-   can start a recording, so ordinary movement never triggers by accident.
-   The face is used because it stays reliably tracked even when a close
-   camera framing crops the lower body. The moments where your hand is still
-   near your face are trimmed off both ends, so a code spans only the
-   movement in between; captures with no real movement are dropped quietly.
+3. **Teach vs Perform.** Teaching a code is a deliberate recording: cover your
+   face with one hand and hold it for a 3-second countdown to start, perform
+   the movement, then cover your face and hold again to stop. The hand-to-face
+   moments are trimmed so a code spans only the movement itself. Performing, by
+   contrast, is continuous: the app keeps a rolling buffer of your recent poses
+   and, several times a second, matches it against your saved codes. When a
+   movement matches, its label is shown and spoken. No recording step, no
+   button, no cover pose. (A Manual hold-to-capture mode is available as a
+   fallback for noisy backgrounds.)
 
 4. **Matching.** A captured movement is resampled to a fixed 20 frames and
    compared to every saved code with Dynamic Time Warping, which tolerates
@@ -99,11 +100,13 @@ The URL is remembered in the browser. MoveNet and BlazePose need no setup.
 - **Teach:** name a word, click Record, cover your face with one hand, move
   it away and perform your movement, then cover your face again. It saves by
   itself.
-- **Perform:** same bracket: cover your face, perform a saved code, cover
-  your face again. When it matches, the word appears above your head, is
-  spoken aloud, and joins the phrase strip. Speak the whole phrase, undo the
-  last word, or clear it with the buttons above the strip. Use the sensitivity
+- **Perform:** just perform. The app watches continuously and, when your
+  movement matches a saved code, the word appears above your head, is spoken
+  aloud, and joins the phrase strip. Speak the whole phrase, undo the last
+  word, or clear it with the buttons above the strip. Use the sensitivity
   slider and the live distance readout to calibrate.
+- **About:** what the app does and a plain-language privacy summary (everything
+  runs locally; no data is sent anywhere).
 - **Codes:** play back a whole word or a single example (dance along with the
   ghost skeleton), rename, delete a word or just one of its examples, and
   export/import all codes as JSON.

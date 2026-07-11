@@ -15,10 +15,15 @@ const NUM_LMS = 33;
 // (torso units) or it is dropped as a false start (face covered and uncovered
 // with no gesture in between).
 const MIN_TRAVEL = 0.3;
-const MAX_SEG_MS = 10000;         // abandon a capture that never returns to the face
-const MAX_TEACH_MS = 12000;       // safety cap so a teaching capture can't hang
+const MAX_SEG_MS = 20000;         // abandon a capture that never returns to the face
+const MAX_TEACH_MS = 22000;       // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
 const COOLDOWN_MS = 1200;         // min gap before the same word fires again
+// Both ends of a capture are deliberate holds with a visible 3-2-1 countdown:
+// hold face+hand this long to START recording, and again to STOP it. A brief
+// brush of the face therefore does nothing.
+const START_HOLD_MS = 3000;
+const STOP_HOLD_MS = 3000;
 
 // ---------- DOM ----------
 const video = document.getElementById("video");
@@ -81,13 +86,8 @@ let playback = null;          // {word, items, idx, t0} ghost playback of a save
 let liveFrame = null;
 
 function newSeg() {
-  return { state: "idle", frames: [], near: [], startedAt: 0, restSince: 0 };
+  return { state: "idle", frames: [], near: [], startedAt: 0, holdSince: 0, canStop: false, stopSince: 0 };
 }
-
-// A recording only ends once the hand has been on the face continuously for
-// this long, so a gesture that merely sweeps a hand past the face mid-move
-// does not stop the capture early.
-const REST_DWELL_MS = 260;
 
 // Largest single-landmark displacement between two pose vectors.
 function maxPoseDist(a, b) {
@@ -227,11 +227,11 @@ function drawRestTargets() {
   const inRange = on;
   octx.beginPath();
   octx.arc(anchor.x * overlay.width, anchor.y * overlay.height, r, 0, Math.PI * 2);
-  octx.strokeStyle = inRange ? "rgba(52,211,153,0.9)" : "rgba(255,255,255,0.5)";
+  octx.strokeStyle = inRange ? "rgba(236,255,0,0.95)" : "rgba(255,255,255,0.5)";
   octx.lineWidth = inRange ? 4 : 2;
   octx.stroke();
   if (inRange) {
-    octx.fillStyle = "rgba(52,211,153,0.15)";
+    octx.fillStyle = "rgba(236,255,0,0.15)";
     octx.fill();
   }
 }
@@ -442,7 +442,7 @@ async function runFrame() {
     let bodyVisible = false, restNow = false;
     const lms = pickMainPose(poses);
     if (lms) {
-      drawSkeleton(lms, backend.connections, "rgba(123,92,255,0.9)", "#ff4d9d");
+      drawSkeleton(lms, backend.connections, "rgba(255,0,42,0.9)", "#ECFF00");
 
       if (keyLandmarksVisible(lms)) {
         bodyVisible = true;
@@ -459,11 +459,13 @@ async function runFrame() {
         } else if (triggerMode === "manual") {
           if (manualCapturing) manualFrames.push(vec);
         } else {
-          segmentStep(vec, restNow, nearNow, now);
+          // Perform is continuous: keep a rolling buffer and match against saved
+          // codes on a short interval, firing the label when a movement matches.
+          perfPush(vec, now);
+          if (now - lastMatchAt >= MATCH_INTERVAL_MS) { lastMatchAt = now; recognizeContinuous(now); }
         }
-        // Face target circle: the start/stop control, so always visible in
-        // auto mode (except during ghost playback).
-        if (triggerMode === "auto" && !playback) drawRestTargets();
+        // Face target circle belongs to Teach's cover-to-record bracket only.
+        if (teach && !teach.manual && !playback) drawRestTargets();
       }
 
       // Keep the matched word floating just above the head. The video is
@@ -476,29 +478,14 @@ async function runFrame() {
       }
     }
 
-    // While recording, the screen belongs to the movement: hide any matched
-    // word and show a big REC. The big SAVED/countdown flashes are left alone
-    // (they only appear when not recording), so this never clobbers them.
-    // Mode-aware: while teaching, only the teach state counts (a half-finished
-    // Perform capture in `seg` must not light REC); while performing, teach is
-    // null so `seg` drives it.
-    const recording = teach
-      ? (teach.manual || teach.state === "capturing")
-      : (manualCapturing || seg.state === "recording");
-    if (recording) {
-      bigWord.classList.remove("show");
-      if (!bigStatus.classList.contains("rec")) {
-        bigStatus.textContent = "REC";
-        bigStatus.className = "big-status rec show";
-      }
-    } else if (bigStatus.classList.contains("rec")) {
-      bigStatus.className = "big-status";
-    }
-
     // The teach overlay is driven here, EVERY frame, not inside the
     // detection-gated branch. Otherwise losing sight of the body freezes the
-    // on-screen state ("stuck on 1" / stale REC) while the state machine waits.
+    // on-screen state while the state machine waits.
     if (teach) updateTeachUI(bodyVisible, restNow);
+
+    // Big countdown / REC overlay, driven from the live capture phase. Runs
+    // after updateTeachUI so it wins the status line during active phases.
+    updateCaptureOverlay(now);
 
     // Ghost playback of a saved code, drawn on top of the live view.
     if (playback) drawPlayback(now);
@@ -511,45 +498,67 @@ async function runFrame() {
   }
 }
 
-// ---------- Hand-over-face bracketed segmentation ----------
-// idle: waiting for the face to be covered. armed: hand is on the face; the
-// capture starts the moment it leaves. recording: collecting frames until the
-// hand covers the face again.
-function segmentStep(vec, rest, near, now) {
-  if (seg.state === "idle") {
-    if (rest) seg.state = "armed";
-    setPerformState();
-    return;
-  }
-  if (seg.state === "armed") {
-    if (!rest) {
-      seg.state = "recording";
-      seg.frames = [vec];
-      seg.near = [near];
-      seg.startedAt = now;
-    }
-    setPerformState();
-    return;
-  }
-  // recording
-  seg.frames.push(vec);
-  seg.near.push(near);
-  if (rest) {
-    if (!seg.restSince) seg.restSince = now;
-    if (now - seg.restSince >= REST_DWELL_MS) { closeSegment(now); return; }
-  } else {
-    seg.restSince = 0;
-  }
-  if (now - seg.startedAt > MAX_SEG_MS) { seg = newSeg(); setPerformState(); return; }
-  setPerformState();
+// ---------- Continuous performance recognition ----------
+// Perform watches continuously: a rolling buffer of recent poses is matched,
+// every MATCH_INTERVAL_MS, against each saved code over a window the length of
+// that code. When a movement matches, its label is printed and spoken.
+const PERF_BUF_MS = 4000;         // rolling history kept
+const MATCH_INTERVAL_MS = 120;    // how often recognition runs
+const MIN_ACTIVE_TRAVEL = 0.28;   // ignore near-stillness so idle never matches
+const perfBuf = [];               // {vec, t}
+let lastMatchAt = 0;
+
+function perfPush(vec, now) {
+  perfBuf.push({ vec, t: now });
+  while (perfBuf.length && perfBuf[0].t < now - PERF_BUF_MS) perfBuf.shift();
 }
 
-function closeSegment(now) {
-  const frames = trimNearFace(seg.frames, seg.near);
-  seg = newSeg();
-  seg.state = "armed"; // the hand is on the face right now
-  setPerformState();
-  if (frames.length >= MIN_SEG_FRAMES && travelOf(frames) >= MIN_TRAVEL) matchAndFire(frames, now);
+// The buffered pose vectors from the last `durMs`.
+function windowFrames(durMs, now) {
+  const start = now - durMs;
+  const out = [];
+  for (let i = perfBuf.length - 1; i >= 0; i--) {
+    if (perfBuf[i].t < start) break;
+    out.push(perfBuf[i].vec);
+  }
+  out.reverse();
+  return out;
+}
+
+function recognizeContinuous(now) {
+  const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
+  if (pool.length === 0) {
+    bestWordEl.textContent = templates.length ? "no codes for this algorithm" : "no codes yet";
+    return;
+  }
+  // Skip while essentially still, so standing around never fires a match.
+  if (travelOf(windowFrames(1200, now)) < MIN_ACTIVE_TRAVEL) { barEl.style.width = "0%"; return; }
+
+  // Best (smallest) distance per word, each matched over a window its own length.
+  const perWord = new Map();
+  for (const tmpl of pool) {
+    const dur = Math.max(500, Math.min(PERF_BUF_MS, tmpl.durMs || 1500));
+    const win = windowFrames(dur, now);
+    if (win.length < MIN_SEG_FRAMES) continue;
+    const live = resampleSeq(win, FIXED_LEN);
+    const d = dtw(live, tmpl.seq);
+    const k = tmpl.word.toLowerCase();
+    if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: tmpl.word, dist: d });
+  }
+  if (perWord.size === 0) return;
+  const ranked = [...perWord.values()].sort((a, b) => a.dist - b.dist);
+  const best = ranked[0], second = ranked[1];
+  const thresh = thresholdFor(best.word);
+
+  bestWordEl.textContent = best.word;
+  bestDistEl.textContent = best.dist.toFixed(3);
+  barEl.style.width = Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100)) + "%";
+
+  const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
+  if (best.dist < thresh && !ambiguous) {
+    const ok = best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS;
+    if (ok) fireWord(best.word, now);
+  }
 }
 
 const DEFAULT_SENS = 0.28;   // slider midpoint the auto thresholds scale against
@@ -623,16 +632,14 @@ function matchAndFire(frames, now) {
   }
 }
 
-// Status text is derived from the live segmentation and trigger state.
+// Status text for the Perform tab.
 function setPerformState() {
   if (!ready) return;
   if (triggerMode === "manual") {
     statusEl.textContent = manualCapturing ? "● capturing movement…" : "● ready. Hold the button to capture.";
     return;
   }
-  if (seg.state === "recording") statusEl.textContent = "● recording. Cover your face to finish.";
-  else if (seg.state === "armed") statusEl.textContent = "Hand on face. Move it away and perform a code.";
-  else statusEl.textContent = "● watching. Cover your face with one hand to start.";
+  statusEl.textContent = "● watching — perform a saved code and its label will appear.";
 }
 
 function fireWord(word, now) {
@@ -716,6 +723,33 @@ function flashBigStatus(text, cls, ms = 1400) {
   }, ms);
 }
 
+// Drive the big in-video overlay from the current capture phase: a start/stop
+// 3-2-1 countdown, or REC while actually recording. Leaves SAVED flashes alone.
+// Only Teach records, so the big REC / 3-2-1 countdown overlay is Teach-only.
+// Perform is continuous and shows no recording overlay.
+function updateCaptureOverlay(now) {
+  const remain = (since, span) => Math.max(1, Math.ceil((span - (now - since)) / 1000));
+  let kind = null, secs = 0;
+  if (teach && teach.manual) kind = "rec";
+  else if (teach && teach.state === "starting") { kind = "start"; secs = remain(teach.holdSince, START_HOLD_MS); }
+  else if (teach && teach.state === "capturing") kind = teach.stopSince ? (secs = remain(teach.stopSince, STOP_HOLD_MS), "stop") : "rec";
+
+  if (kind === "rec") {
+    bigWord.classList.remove("show");
+    if (!bigStatus.classList.contains("rec")) { bigStatus.textContent = "REC"; bigStatus.className = "big-status rec show"; }
+  } else if (kind === "start" || kind === "stop") {
+    bigWord.classList.remove("show");
+    bigStatus.textContent = secs;
+    bigStatus.className = "big-status show " + (kind === "stop" ? "stop" : "count");
+  } else if (bigStatus.classList.contains("rec") || bigStatus.classList.contains("count") || bigStatus.classList.contains("stop")) {
+    bigStatus.className = "big-status"; // leave SAVED flashes alone
+  }
+
+  if (!ready || !teach) return; // Perform manages its own status line
+  if (kind === "start") statusEl.textContent = `Keep your face covered… recording in ${secs}`;
+  else if (kind === "stop") statusEl.textContent = `Hold… stopping in ${secs}`;
+}
+
 function renderPhrase() {
   phraseEl.innerHTML = phrase.length === 0
     ? '<span class="muted">Your matched words appear here…</span>'
@@ -729,35 +763,27 @@ async function startTeach() {
   if (teach) return;
 
   seg = newSeg(); // drop any half-finished Perform capture so it can't drive REC
-  recordBtn.disabled = true;
-  statusEl.textContent = "Get ready…";
-  for (let i = 3; i >= 1; i--) { flashBigStatus(i, "count", 0); await sleep(600); }
+  countdownEl.hidden = true;
   bigStatus.className = "big-status";
-  countdownEl.hidden = false;
-  countdownEl.classList.remove("rec");
 
   const manual = triggerMode === "manual";
   teach = {
     word, manual,
-    state: "prime",          // prime -> armed -> capturing (manual jumps straight to capturing)
-    frames: [], near: [], restSince: 0,
+    state: manual ? "capturing" : "prime", // prime -> starting -> capturing
+    frames: [], near: [], holdSince: 0, canStop: false, stopSince: 0,
     startedAt: performance.now(),
   };
-  recordBtn.disabled = false;
   if (manual) {
-    teach.state = "capturing";
-    countdownEl.textContent = "REC";
-    countdownEl.classList.add("rec");
     recordBtn.textContent = "Stop & save";
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
   } else {
     recordBtn.textContent = "Cancel";
-    setTeachMsg("Cover your face with one hand. Recording starts when you move it away and stops when you cover your face again.", "");
+    setTeachMsg("Cover your face with one hand and hold it there. A 3-second countdown starts recording; hold again to stop.", "");
   }
 }
 
-// One frame of a teaching capture. Mirrors Perform: cover the face to arm,
-// move the hand away to start recording, cover again to finish and save.
+// One frame of a teaching capture. Mirrors Perform: hold face+hand for the
+// 3-second countdown to start, dance, then hold face+hand again to finish.
 function teachStep(vec, rest, near, now) {
   const t = teach;
   if (t.manual) {
@@ -765,27 +791,31 @@ function teachStep(vec, rest, near, now) {
     t.near.push(near);
     return;
   }
-  if (t.state === "prime") {  // waiting for the hand to cover the face
-    if (rest) t.state = "armed";
+  if (t.state === "prime") {  // waiting for the face to be covered
+    if (rest) { t.state = "starting"; t.holdSince = now; }
     return;
   }
-  if (t.state === "armed") {  // hand on face; recording starts when it leaves
-    if (!rest) {
+  if (t.state === "starting") { // counting down; uncovering cancels
+    if (!rest) { t.state = "prime"; return; }
+    if (now - t.holdSince >= START_HOLD_MS) {
       t.state = "capturing";
       t.frames = [vec];
       t.near = [near];
       t.startedAt = now;
+      t.canStop = false;
+      t.stopSince = 0;
     }
     return;
   }
   // capturing
   t.frames.push(vec);
   t.near.push(near);
-  if (rest) {
-    if (!t.restSince) t.restSince = now;
-    if (now - t.restSince >= REST_DWELL_MS) finishTeach(now, false);
+  if (!rest) t.canStop = true;
+  if (t.canStop && rest) {
+    if (!t.stopSince) t.stopSince = now;
+    if (now - t.stopSince >= STOP_HOLD_MS) finishTeach(now, false);
   } else {
-    t.restSince = 0;
+    t.stopSince = 0;
   }
 }
 
@@ -794,29 +824,24 @@ function teachStep(vec, rest, near, now) {
 function updateTeachUI(bodyVisible, rest) {
   const t = teach;
   if (!t) return;
-  countdownEl.hidden = false;
   if (!bodyVisible) {
+    countdownEl.hidden = false;
     countdownEl.textContent = "?";
     countdownEl.classList.remove("rec");
     statusEl.textContent = "Can't see your shoulders. Adjust your framing.";
     return;
   }
-  if (t.manual || t.state === "capturing") {
-    // The big REC overlay covers this state, so keep the pill out of the way.
+  // The big overlay owns the countdown / REC states; keep the pill hidden.
+  if (t.manual || t.state === "starting" || t.state === "capturing") {
     countdownEl.hidden = true;
-    statusEl.textContent = t.manual
-      ? "Recording. Click Stop & save when done."
-      : "Recording. Cover your face with one hand to finish and save.";
+    if (t.manual) statusEl.textContent = "Recording. Click Stop & save when done.";
     return;
   }
+  // prime: waiting for the face to be covered
+  countdownEl.hidden = false;
   countdownEl.classList.remove("rec");
-  if (t.state === "prime") {
-    countdownEl.textContent = "COVER";
-    statusEl.textContent = "Step 1 of 2: cover your face with one hand (the circle).";
-  } else { // armed
-    countdownEl.textContent = "SET";
-    statusEl.textContent = "Step 2 of 2: move your hand away and perform. Cover your face again to finish.";
-  }
+  countdownEl.textContent = "COVER";
+  statusEl.textContent = "Cover your face with one hand and hold it there to begin.";
 }
 
 function finishTeach(now, timedOut = false) {
@@ -930,7 +955,7 @@ function drawPlayback(now) {
   }
 
   // Draw with the bone set of the algorithm the code was taught on.
-  drawSkeleton(ghost, connectionsForFamily(cur.family || "blaze"), "rgba(255,195,113,0.95)", "#ffffff");
+  drawSkeleton(ghost, connectionsForFamily(cur.family || "blaze"), "rgba(236,255,0,0.95)", "#FF002A");
 
   statusEl.textContent =
     `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
