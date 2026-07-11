@@ -565,8 +565,6 @@ function flashRiso(now, ms = 800) {
 // used, so no webcam image is ever stored or drawn. Slots shared by every
 // algorithm family (BlazePose 33 and the COCO-17 mapping) so figures draw the
 // same regardless of which model taught the code.
-const ARM_BONES = [[11, 13], [13, 15], [12, 14], [14, 16]];
-const LEG_BONES = [[23, 25], [25, 27], [24, 26], [26, 28]];
 function figPoint(frame, i, cx, cy, sc) {
   const x = frame[i * 2], y = frame[i * 2 + 1];
   // A landmark a 17-point code never filled stays exactly at the origin.
@@ -574,86 +572,89 @@ function figPoint(frame, i, cx, cy, sc) {
   // Mirror x so the figure faces the same way as the mirrored live video.
   return { x: cx - x * sc, y: cy + y * sc, v: filled };
 }
-// One colour layer of the figure. `sep` (a dark seam colour) is drawn as a
-// halo under each limb, hand, and the head, like a print knockout: it is what
-// keeps an arm readable when it lies on top of the torso instead of melting
-// into one blob.
-function paintFigure(ctx, frame, cx, cy, sc, s, color, sep) {
+// One colour layer of the figure: a connected solid silhouette (torso fill
+// plus continuous limb strokes), like the printed riso cards. No knockout
+// seams: they chopped the body into disconnected lumps. When a recording has
+// no usable leg data, a neutral standing pair of legs is drawn anyway so the
+// figure always reads as a whole body.
+function paintFigure(ctx, frame, cx, cy, sc, s, color) {
   const P = (i) => figPoint(frame, i, cx, cy, sc);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  const halo = s * 0.05;
-  const bone = (A, B, w) => {
-    if (!A.v || !B.v) return;
-    if (sep) {
-      ctx.strokeStyle = sep;
-      ctx.lineWidth = w + halo;
-      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
-    }
-    ctx.strokeStyle = color;
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  const stroke = (pts, w) => {
     ctx.lineWidth = w;
-    ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+    ctx.stroke();
   };
-  const disc = (x, y, r) => {
-    if (sep) {
-      ctx.fillStyle = sep;
-      ctx.beginPath(); ctx.arc(x, y, r + halo * 0.5, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-  };
-  // Torso as a filled quad so the body reads as a solid core (no edge strokes:
-  // they only fattened the blob).
-  const torso = [P(11), P(12), P(24), P(23)].filter((p) => p.v);
+  // Torso as a filled quad so the body reads as a solid core.
+  const lsP = P(11), rsP = P(12), lhP = P(23), rhP = P(24);
+  const torso = [lsP, rsP, rhP, lhP].filter((p) => p.v);
   if (torso.length >= 3) {
-    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(torso[0].x, torso[0].y);
     for (const p of torso.slice(1)) ctx.lineTo(p.x, p.y);
     ctx.closePath();
     ctx.fill();
   }
-  // Legs first, then feet.
-  for (const [a, b] of LEG_BONES) bone(P(a), P(b), s * 0.1);
-  for (const [ank, toe] of [[27, 31], [28, 32]]) {
-    const A = P(ank);
-    if (!A.v) continue;
-    const T = P(toe);
-    const tx = T.v ? T.x : A.x - s * 0.06;
-    const ty = T.v ? T.y : A.y + s * 0.025;
-    bone(A, { x: tx, y: ty, v: true }, s * 0.08);
+  // Legs as continuous hip-knee-ankle strokes. A leg whose data is missing or
+  // collapsed (taught with the lower body out of frame) is drawn standing
+  // straight down instead, so the figure is never legless.
+  const legLen = sc * 0.95; // hip-to-knee and knee-to-ankle length
+  for (const [hip, knee, ank, toeI] of [[23, 25, 27, 31], [24, 26, 28, 32]]) {
+    const H = P(hip);
+    if (!H.v) continue;
+    let K = P(knee), A = P(ank);
+    const degenerate = !K.v || !A.v ||
+      Math.hypot(A.x - H.x, A.y - H.y) < sc * 0.6;
+    if (degenerate) {
+      K = { x: H.x, y: H.y + legLen, v: true };
+      A = { x: H.x, y: H.y + legLen * 2, v: true };
+    }
+    stroke([H, K, A], s * 0.105);
+    // Foot: toward the toes if known, else a small default foot.
+    const T = P(toeI);
+    const foot = !degenerate && T.v
+      ? T
+      : { x: A.x - s * 0.06, y: A.y + s * 0.02, v: true };
+    stroke([A, foot], s * 0.08);
   }
-  // Neck + head under the arms, so raised arms stay on top.
-  const nose = P(0), ls = P(11), rs = P(12);
-  const hx = nose.v ? nose.x : (ls.x + rs.x) / 2;
-  const hy = nose.v ? nose.y : (ls.y + rs.y) / 2 - s * 0.14;
-  if (ls.v && rs.v) bone({ x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2, v: true }, { x: hx, y: hy, v: true }, s * 0.06);
-  disc(hx, hy, s * 0.105);
-  // Arms LAST and seamed, the most expressive part of a pose, always readable
-  // even lying across the torso; a hand disc caps each wrist.
-  for (const [a, b] of ARM_BONES) bone(P(a), P(b), s * 0.09);
-  for (const [w, k1, k2] of [[15, 17, 19], [16, 18, 20]]) {
-    const W = P(w);
-    if (!W.v) continue;
+  // Neck + head.
+  const nose = P(0);
+  const hx = nose.v ? nose.x : (lsP.x + rsP.x) / 2;
+  const hy = nose.v ? nose.y : (lsP.y + rsP.y) / 2 - s * 0.14;
+  if (lsP.v && rsP.v) stroke([{ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }], s * 0.06);
+  ctx.beginPath();
+  ctx.arc(hx, hy, s * 0.105, 0, Math.PI * 2);
+  ctx.fill();
+  // Arms as continuous shoulder-elbow-wrist strokes, capped with a hand disc.
+  for (const [sho, elb, wri, k1, k2] of [[11, 13, 15, 17, 19], [12, 14, 16, 18, 20]]) {
+    const S = P(sho), E = P(elb), W = P(wri);
+    if (!S.v || !E.v || !W.v) continue;
+    stroke([S, E, W], s * 0.09);
     const a = P(k1), b = P(k2);
     let hx2 = W.x, hy2 = W.y, cnt = 1;
     if (a.v) { hx2 += a.x; hy2 += a.y; cnt++; }
     if (b.v) { hx2 += b.x; hy2 += b.y; cnt++; }
-    disc(hx2 / cnt, hy2 / cnt, s * 0.055);
+    ctx.beginPath();
+    ctx.arc(hx2 / cnt, hy2 / cnt, s * 0.05, 0, Math.PI * 2);
+    ctx.fill();
   }
 }
 function drawFigureCell(ctx, frame, x0, s) {
   const cx = x0 + s * 0.5;
-  const cy = s * 0.52;     // hips near centre so legs and raised arms both fit
-  const sc = s * 0.2;      // torso length in px: a bit larger so limbs read
+  const cy = s * 0.42;     // hips above centre so default legs fit below
+  const sc = s * 0.17;     // torso length in px
   const off = s * 0.05;    // yellow print offset
-  // Yellow layer first (offset, no seams: it is the misprint shadow), then
-  // red on top with dark seams separating limbs from the body.
+  // Yellow layer first (offset), then red on top: the riso registration look.
   ctx.save();
   ctx.translate(off, off * 0.7);
-  paintFigure(ctx, frame, cx, cy, sc, s, "#ECFF00", null);
+  paintFigure(ctx, frame, cx, cy, sc, s, "#ECFF00");
   ctx.restore();
-  paintFigure(ctx, frame, cx, cy, sc, s, "#FF002A", "#1d1112");
+  paintFigure(ctx, frame, cx, cy, sc, s, "#FF002A");
 }
 // A row of `count` evenly-spaced frames from a stored seq, as one canvas.
 function buildPoseStrip(seq, { count = 3, size = 74 } = {}) {
@@ -2261,7 +2262,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v21 (2026-07-11)");
+  console.log("Queercoded build v22 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
