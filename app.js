@@ -443,6 +443,7 @@ async function initPose() {
   await backend.load();
   currentFamily = backend.family;
   recomputeWordStats(); // thresholds are per-family
+  updateBgBtn();        // background calibration is per-family too
   renderPerformable();  // performable list is per-family
 }
 
@@ -583,28 +584,33 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
   ctx.lineJoin = "round";
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  const stroke = (pts, w) => {
-    ctx.lineWidth = w;
+  const disc = (p, r) => {
     ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
-    ctx.stroke();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
   };
-  // Torso as a filled quad so the body reads as a solid core.
-  const lsP = P(11), rsP = P(12), lhP = P(23), rhP = P(24);
-  const torso = [lsP, rsP, rhP, lhP].filter((p) => p.v);
-  if (torso.length >= 3) {
+  // A limb segment as a TAPERED polygon (wide at the proximal joint, narrow
+  // at the distal one) with round joints: fleshier than a uniform stroke, so
+  // the figure reads as a body rather than a stick figure.
+  const limb = (A, B, wA, wB) => {
+    const dx = B.x - A.x, dy = B.y - A.y;
+    const len = Math.hypot(dx, dy) || 1e-6;
+    const nx = -dy / len, ny = dx / len;
     ctx.beginPath();
-    ctx.moveTo(torso[0].x, torso[0].y);
-    for (const p of torso.slice(1)) ctx.lineTo(p.x, p.y);
+    ctx.moveTo(A.x + nx * wA / 2, A.y + ny * wA / 2);
+    ctx.lineTo(B.x + nx * wB / 2, B.y + ny * wB / 2);
+    ctx.lineTo(B.x - nx * wB / 2, B.y - ny * wB / 2);
+    ctx.lineTo(A.x - nx * wA / 2, A.y - ny * wA / 2);
     ctx.closePath();
     ctx.fill();
-  }
-  // Legs as continuous hip-knee-ankle strokes. A leg whose data is missing or
-  // collapsed (taught with the lower body out of frame) is drawn standing
-  // straight down instead, splayed slightly outward so the two default legs
-  // never fuse into one column.
-  const legLen = sc * 0.95; // hip-to-knee and knee-to-ankle length
+    disc(A, wA / 2);
+    disc(B, wB / 2);
+  };
+  const lsP = P(11), rsP = P(12), lhP = P(23), rhP = P(24);
+  // Legs first (under the torso). A leg whose data is missing or collapsed
+  // (taught with the lower body out of frame) is drawn standing straight
+  // down, splayed slightly outward so default legs never fuse into a column.
+  const legLen = sc * 0.95;
   const midHipX = lhP.v && rhP.v ? (lhP.x + rhP.x) / 2 : cx;
   for (const [hip, knee, ank, toeI] of [[23, 25, 27, 31], [24, 26, 28, 32]]) {
     const H = P(hip);
@@ -617,36 +623,47 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
       K = { x: H.x + dir * sc * 0.1, y: H.y + legLen, v: true };
       A = { x: H.x + dir * sc * 0.18, y: H.y + legLen * 2, v: true };
     }
-    stroke([H, K, A], sc * 0.34);
-    // Foot: toward the toes if known, else a small default foot.
+    limb(H, K, sc * 0.48, sc * 0.3);  // thigh
+    limb(K, A, sc * 0.3, sc * 0.2);   // calf
     const T = P(toeI);
     const foot = !degenerate && T.v
       ? T
-      : { x: A.x - sc * 0.28, y: A.y + sc * 0.1, v: true };
-    stroke([A, foot], sc * 0.26);
+      : { x: A.x - sc * 0.3, y: A.y + sc * 0.1, v: true };
+    limb(A, foot, sc * 0.2, sc * 0.16);
   }
-  // Neck + head, at human proportions: the head is a fraction of the torso,
-  // not a lollipop swallowing it.
+  // Torso: filled quad softened with a thick round-jointed outline, so the
+  // trunk has shoulders and hips instead of hard corners.
+  const torso = [lsP, rsP, rhP, lhP].filter((p) => p.v);
+  if (torso.length >= 3) {
+    ctx.lineWidth = sc * 0.3;
+    ctx.beginPath();
+    ctx.moveTo(torso[0].x, torso[0].y);
+    for (const p of torso.slice(1)) ctx.lineTo(p.x, p.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  // Neck + head at human proportions.
   const nose = P(0);
   const hx = nose.v ? nose.x : (lsP.x + rsP.x) / 2;
   const hy = nose.v ? nose.y : (lsP.y + rsP.y) / 2 - sc * 0.55;
-  if (lsP.v && rsP.v) stroke([{ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }], sc * 0.2);
-  ctx.beginPath();
-  ctx.arc(hx, hy, sc * 0.27, 0, Math.PI * 2);
-  ctx.fill();
-  // Arms as continuous shoulder-elbow-wrist strokes; when the hand landmarks
-  // exist the stroke continues through the hand, so the arm simply ends in a
-  // hand rather than a stuck-on disc.
+  if (lsP.v && rsP.v) {
+    limb({ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }, sc * 0.26, sc * 0.2);
+  }
+  disc({ x: hx, y: hy }, sc * 0.29);
+  // Arms on top (they carry the pose): tapered shoulder-elbow-wrist ending
+  // in a small hand.
   for (const [sho, elb, wri, k1, k2] of [[11, 13, 15, 17, 19], [12, 14, 16, 18, 20]]) {
     const S = P(sho), E = P(elb), W = P(wri);
     if (!S.v || !E.v || !W.v) continue;
-    const pts = [S, E, W];
+    limb(S, E, sc * 0.36, sc * 0.26); // upper arm
+    limb(E, W, sc * 0.26, sc * 0.18); // forearm
     const a = P(k1), b = P(k2);
-    if (a.v || b.v) {
-      const n = (a.v ? 1 : 0) + (b.v ? 1 : 0);
-      pts.push({ x: ((a.v ? a.x : 0) + (b.v ? b.x : 0)) / n, y: ((a.v ? a.y : 0) + (b.v ? b.y : 0)) / n });
-    }
-    stroke(pts, sc * 0.3);
+    const n = (a.v ? 1 : 0) + (b.v ? 1 : 0);
+    const hand = n
+      ? { x: ((a.v ? a.x : 0) + (b.v ? b.x : 0)) / n, y: ((a.v ? a.y : 0) + (b.v ? b.y : 0)) / n }
+      : { x: W.x + (W.x - E.x) * 0.22, y: W.y + (W.y - E.y) * 0.22 };
+    limb(W, hand, sc * 0.18, sc * 0.22); // hand: a slight distal bulge
   }
 }
 function drawFigureCell(ctx, frame, x0, s) {
@@ -796,7 +813,13 @@ async function runFrame() {
         } else if (currentTab === "perform") {
           // Recognition belongs to the Perform tab only: on Teach or Codes an
           // idle body must never fire (or even score) matches.
-          if (triggerMode === "manual") {
+          if (bgCapture) {
+            // Calibrating: collect idle movement, match nothing.
+            bgCapture.frames.push(vec);
+            const remain = Math.ceil((bgCapture.until - now) / 1000);
+            statusEl.textContent = `Learning your idle movement… ${remain}s. Move casually; do NOT perform your codes.`;
+            if (now >= bgCapture.until) finishBgCapture();
+          } else if (triggerMode === "manual") {
             if (manualCapturing) manualFrames.push(vec); // deliberate capture: record everything
           } else if (handVis) {
             // Perform is continuous but fires only when a whole move completes.
@@ -887,6 +910,85 @@ const MAX_MOVE_MS = 7000;
 const perfBuf = [];               // {vec, t}
 let moving = false, moveStart = 0, lastActive = 0;
 let perfHandsLost = false;        // matching paused because no wrist is tracked
+
+// ---------- Background class (idle-movement calibration) ----------
+// The user records ~10s of their own ordinary movement (shifting, adjusting,
+// crossing arms) as NEGATIVE examples, stored per algorithm family. A word
+// then only fires when the live movement is closer to that word than to the
+// user's own background, by a margin, which replaces guessing at absolute
+// thresholds with a comparison against reality.
+const BG_KEY = "queercoded.background.v1";
+const BG_MARGIN = 0.85;        // best word must beat the background by this factor
+const BG_CAPTURE_MS = 10000;
+let bgStore = {};
+try { bgStore = JSON.parse(localStorage.getItem(BG_KEY)) || {}; } catch { bgStore = {}; }
+let bgCapture = null;          // {until, frames:[vec]} while calibrating
+const bgBtn = document.getElementById("bgBtn");
+function bgSeqs() { return bgStore[currentFamily] || []; }
+function updateBgBtn() {
+  if (bgBtn) bgBtn.textContent = bgSeqs().length
+    ? "Recalibrate my idle movement (10s)"
+    : "Calibrate: learn my idle movement (10s)";
+}
+function startBgCapture() {
+  if (!ready || teach || bgCapture) return;
+  bgCapture = { until: performance.now() + BG_CAPTURE_MS, frames: [] };
+  bgBtn.disabled = true;
+}
+function finishBgCapture() {
+  const frames = bgCapture.frames;
+  bgCapture = null;
+  bgBtn.disabled = false;
+  // Overlapping ~2s windows become the background examples.
+  const WIN = 60, STEP = 30;
+  const seqs = [];
+  for (let i = 0; i + WIN <= frames.length && seqs.length < 12; i += STEP) {
+    seqs.push(resampleSeq(frames.slice(i, i + WIN), FIXED_LEN));
+  }
+  if (seqs.length < 2) {
+    diag("calibration failed: too little tracked movement, try again");
+    setPerformState();
+    return;
+  }
+  bgStore[currentFamily] = seqs;
+  try { localStorage.setItem(BG_KEY, JSON.stringify(bgStore)); } catch {}
+  updateBgBtn();
+  setPerformState();
+  diag(`background calibrated: ${seqs.length} idle windows`);
+}
+// Smallest DTW distance from a live 20-frame sequence to any background window.
+function bgDistSeq(live) {
+  let m = Infinity;
+  for (const s of bgSeqs()) {
+    const d = dtw(live, s);
+    if (d < m) m = d;
+  }
+  return m;
+}
+// Smallest pose distance from a single held pose to any background frame.
+function bgDistPose(vec) {
+  let m = Infinity;
+  for (const s of bgSeqs()) {
+    for (let i = 0; i < s.length; i += 2) {
+      const d = poseDist(vec, s[i]);
+      if (d < m) m = d;
+    }
+  }
+  return m;
+}
+
+// ---------- Match diagnosis ----------
+// A rolling, human-readable log of every decision the recognizer makes, shown
+// in the Perform tab, so "it did not match" becomes "it lost to gate X by Y".
+const diagBox = document.getElementById("diagBox");
+const diagLines = [];
+function diag(msg) {
+  if (!diagBox) return;
+  diagLines.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
+  while (diagLines.length > 12) diagLines.shift();
+  diagBox.textContent = diagLines.join("\n");
+}
+const fmt = (n) => (isFinite(n) ? n.toFixed(3) : "none");
 
 // The performer's neutral stance, learned as a slow average of the pose
 // whenever the body is still. Codes start and end near neutral, so a segment
@@ -1073,19 +1175,30 @@ function holdStep(vec, now, face) {
   barEl.style.width = pct + "%";
   if (pct >= 25) showClosest(best.word, pct);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
+  // The held pose must resemble the word MORE than the user's own calibrated
+  // idle movement (when a background exists).
+  const bg = bgDistPose(vec);
+  const beatsBg = !isFinite(bg) || best.dist < bg * BG_MARGIN;
   // Deliberately held poses fire at the full threshold (no extra margin):
   // holding still IS the confirmation.
-  if (best.dist < thresh && !ambiguous) {
+  if (best.dist < thresh && !ambiguous && beatsBg) {
     const ok = now - lastFireAt > FIRE_GAP_MS
       && (best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS);
     if (ok) {
-      console.log(`fire(hold) "${best.word}" dist=${best.dist.toFixed(3)} thresh=${thresh.toFixed(3)}`);
+      diag(`HOLD fired "${best.word}" d=${fmt(best.dist)} thr=${fmt(thresh)} bg=${fmt(bg)}`);
       holdFired = true; // once per hold; move to a new pose to fire again
       fireWord(best.word, now);
     }
+  } else if (!holdDiagAt || now - holdDiagAt > 1500) {
+    holdDiagAt = now;
+    const why = ambiguous ? `ambiguous with "${second.word}" ${fmt(second.dist)}`
+      : !beatsBg ? `background closer (bg=${fmt(bg)})`
+      : `distance ${fmt(best.dist)} over threshold ${fmt(thresh)}`;
+    diag(`hold "${best.word}" not fired: ${why}`);
   }
   return true;
 }
+let holdDiagAt = 0;
 
 // One Perform frame: track motion, show live feedback, and fire ONLY when a
 // move completes (settles), matched over the whole segment.
@@ -1135,12 +1248,17 @@ function performStep(vec, now, face) {
   moving = false;
   const segFrames = framesInRange(moveStart, lastActive);
   const fs = faceStats(moveStart, lastActive);
-  if (now - moveStart < MIN_MOVE_MS || travelOf(segFrames) < MIN_ACTIVE_TRAVEL
-      || (restPose && maxDevFrom(segFrames, restPose) < REST_DEV_MIN)
-      || fs.tailOn || fs.frac > 0.3) {
+  const gate =
+    now - moveStart < MIN_MOVE_MS ? "too short" :
+    travelOf(segFrames) < MIN_ACTIVE_TRAVEL ? "too little travel" :
+    restPose && maxDevFrom(segFrames, restPose) < REST_DEV_MIN ? "stays near your resting stance" :
+    fs.tailOn || fs.frac > 0.3 ? "reads as a hand-to-face rest gesture" : null;
+  if (gate) {
+    diag(`move rejected: ${gate}`);
     barEl.style.width = "0%"; hideClosest(); return;
   }
   let ranked = scoreSegment(segFrames);
+  let chosen = segFrames;
   // Also score the full recent WINDOW at typical code length (stillness
   // included). This covers two failure modes the bare motion segment cannot:
   // a code with an internal hold (raise, hold, lower) spans MORE than one
@@ -1156,20 +1274,34 @@ function performStep(vec, now, face) {
     const win = framesInRange(lastActive - medDur, lastActive);
     if (win.length >= MIN_SEG_FRAMES) {
       const rankedWin = scoreSegment(win);
-      if (rankedWin && (!ranked || rankedWin[0].dist < ranked[0].dist)) ranked = rankedWin;
+      if (rankedWin && (!ranked || rankedWin[0].dist < ranked[0].dist)) { ranked = rankedWin; chosen = win; }
     }
   }
-  if (!ranked) { barEl.style.width = "0%"; hideClosest(); return; }
+  if (!ranked) {
+    diag("move rejected: no code with comparable energy/excursion");
+    barEl.style.width = "0%"; hideClosest(); return;
+  }
   const { best, second, thresh } = showScore(ranked);
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
-  if (best.dist < thresh * FIRE_MARGIN && !ambiguous) {
+  // The movement must resemble the word MORE than the user's own calibrated
+  // idle movement (when a background exists).
+  const bg = bgDistSeq(resampleSeq(chosen, FIXED_LEN));
+  const beatsBg = !isFinite(bg) || best.dist < bg * BG_MARGIN;
+  if (best.dist < thresh * FIRE_MARGIN && !ambiguous && beatsBg) {
     const ok = now - lastFireAt > FIRE_GAP_MS
       && (best.word !== lastFiredWord || now - lastFireAt > COOLDOWN_MS);
     if (ok) {
-      console.log(`fire "${best.word}" dist=${best.dist.toFixed(3)} thresh=${thresh.toFixed(3)}`
-        + (second ? ` second="${second.word}" ${second.dist.toFixed(3)}` : ""));
+      diag(`MOVE fired "${best.word}" d=${fmt(best.dist)} thr=${fmt(thresh)} bg=${fmt(bg)}`
+        + (second ? ` 2nd "${second.word}" ${fmt(second.dist)}` : ""));
       fireWord(best.word, now);
+    } else {
+      diag(`move "${best.word}" matched but cooling down`);
     }
+  } else {
+    const why = ambiguous ? `ambiguous with "${second.word}" ${fmt(second.dist)}`
+      : !beatsBg ? `background closer (bg=${fmt(bg)})`
+      : `distance ${fmt(best.dist)} over ${fmt(thresh * FIRE_MARGIN)}`;
+    diag(`move best "${best.word}": not fired, ${why}`);
   }
 }
 
@@ -1608,10 +1740,16 @@ function finishTeach(now, timedOut = false) {
   // lost in the noise of the save moment; the ghost is worth watching alone.
   clearTimeout(ghostPreviewTimer);
   ghostPreviewTimer = setTimeout(() => startPlaybackExample(tmpl.id), 1500);
+  // Guided takes: words with 3 examples calibrate FAR better thresholds, so
+  // actively steer toward three, with the button itself naming the next take.
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
-  let msg = n > 1
-    ? `Saved example ${n} for “${t.word}”. Click Record movement to add another, or type a new word.`
-    : `Saved “${t.word}”. Click Record movement to add another example, or switch to Perform to try it.`;
+  let msg;
+  if (n < 3) {
+    recordBtn.textContent = `Record take ${n + 1} of 3`;
+    msg = `Take ${n} of 3 saved for “${t.word}”. Do the SAME movement again — three takes make it much more reliable.`;
+  } else {
+    msg = `“${t.word}” now has ${n} takes — nicely calibrated. Switch to Perform to try it, or type a new word.`;
+  }
   if (timedOut) msg += " (Recording hit its time cap; covering your face to finish was never detected.)";
   setTeachMsg(msg, "ok");
   // Keep the word so the next Record adds another example; select it for easy edit.
@@ -2130,6 +2268,7 @@ function setKiosk(on) {
   }
 }
 kioskBtn.addEventListener("click", () => setKiosk(true));
+bgBtn.addEventListener("click", startBgCapture);
 kioskExit.addEventListener("click", () => setKiosk(false));
 document.addEventListener("fullscreenchange", () => {
   // Esc leaves browser fullscreen; drop the kiosk chrome with it.
@@ -2175,6 +2314,7 @@ function activateTab(tab, focus = false) {
   // Leaving the Teach tab mid-recording abandons it, so an active teach can
   // never keep "recording" (REC) into Perform. Also drop any manual capture.
   if (teach && name !== "teach") cancelTeach();
+  if (bgCapture && name !== "perform") { bgCapture = null; bgBtn.disabled = false; }
   manualCapturing = false;
   moving = false; // drop any half-finished Perform move
   hideClosest();
@@ -2267,7 +2407,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v23 (2026-07-11)");
+  console.log("Queercoded build v24 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();

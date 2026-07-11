@@ -653,6 +653,24 @@ body.header-collapsed .zine { min-height: 100vh; }
 }
 a { color: var(--yellow); }
 
+/* Perform: match diagnosis log */
+.diag { margin-top: 14px; }
+.diag summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.diag pre {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  max-height: 170px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#bgBtn { margin: 4px 0 2px; }
+
 /* Perform: performable-code chips */
 .performable { margin: 10px 0 14px; }
 .performable h3 { margin: 0 0 6px; font-size: 14px; }

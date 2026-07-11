@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Queercoded: move to speak</title>
-  <link rel="stylesheet" href="style.css?v=23" />
+  <link rel="stylesheet" href="style.css?v=24" />
 </head>
 <body>
   <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
@@ -96,6 +96,9 @@
           <div id="performList" class="chips" aria-live="polite"></div>
         </div>
 
+        <button id="bgBtn" class="btn small block">Calibrate: learn my idle movement (10s)</button>
+        <small class="muted">One-time (per algorithm): move around casually for 10 seconds, without performing your codes. Words then only fire when a movement resembles them more than your own idle movement, which makes matching far more reliable.</small>
+
         <button id="kioskBtn" class="btn ghost small">Kiosk mode: fullscreen performance view</button>
 
         <label class="field">
@@ -132,6 +135,11 @@
           </div>
         </div>
         <div id="phrase" class="phrase" aria-live="polite"></div>
+
+        <details class="diag">
+          <summary>Match diagnosis</summary>
+          <pre id="diagBox">Perform something and every decision shows up here: what matched, what was rejected, and by which rule.</pre>
+        </details>
       </div>
 
       <!-- TEACH -->
@@ -204,6 +212,6 @@
     </aside>
   </main>
 
-  <script type="module" src="app.js?v=23"></script>
+  <script type="module" src="app.js?v=24"></script>
 </body>
 </html>
