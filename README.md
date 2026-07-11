@@ -72,7 +72,7 @@ Any static server works (`npx serve`, etc.). Allow camera access when prompted.
 ### If it says "No clear movement captured"
 
 - Check the skeleton overlay is actually drawn on your body; if not, adjust
-  framing so your shoulders and hips are in view.
+  framing so at least your head and shoulders are clearly in view.
 - Make the movement bigger. Very small movements are treated as jitter.
 - Try the Full or Heavy tracking model; Lite can lose fast limbs.
 - As a fallback, switch Trigger to Manual in the Perform tab and hold the

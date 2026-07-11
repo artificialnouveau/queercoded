@@ -7,7 +7,7 @@ import {
 // ---------- Config ----------
 const STORE_KEY = "queercoded.templates.v1";
 const FIXED_LEN = 20;             // frames every gesture is resampled to
-const KEY_LMS = [11, 12, 23, 24]; // shoulders + hips: visibility gate
+const KEY_LMS = [11, 12];         // shoulders: visibility gate
 const NUM_LMS = 33;
 
 // A gesture starts when real MOTION is detected and ends on stillness or the
@@ -192,9 +192,10 @@ function normalizePose(lms) {
 }
 
 function keyLandmarksVisible(lms) {
-  // 0.35 rather than 0.5: with a close upper-body framing the hips often sit
-  // right at the frame edge and hover around 0.4 visibility. Gating at 0.5
-  // made detection flicker, which froze the teach state machine.
+  // Shoulders only. The hips used by normalizePose() are taken from the
+  // model's estimate even when they are out of frame; requiring them to be
+  // VISIBLE blocked all processing for close, face-and-torso framings, which
+  // the hand-over-face rest pose is specifically meant to support.
   return KEY_LMS.every((i) => (lms[i]?.visibility ?? 0) > 0.35);
 }
 
@@ -654,7 +655,7 @@ function updateTeachUI(bodyVisible, rest) {
   if (!bodyVisible) {
     countdownEl.textContent = "?";
     countdownEl.classList.remove("rec");
-    statusEl.textContent = "Can't see your shoulders and hips. Adjust your framing.";
+    statusEl.textContent = "Can't see your shoulders. Adjust your framing.";
     return;
   }
   if (t.manual || t.state === "capturing") {

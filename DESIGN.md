@@ -48,9 +48,10 @@ Single-page, no build step. Three files: `index.html`, `style.css`, `app.js`
   CPU fallback, `runningMode: VIDEO`, one pose. All variants emit the same 33
   landmarks per frame, each with `x, y, z, visibility` in normalized image
   coordinates, so saved codes survive a model switch.
-- **Visibility gate:** we only use a frame when shoulders + hips (landmarks
-  11, 12, 23, 24) have visibility > 0.5. This avoids garbage when the person is
-  partly out of frame.
+- **Visibility gate:** we only use a frame when the shoulders (landmarks 11,
+  12) have visibility > 0.35. Hips are NOT required to be visible: the model
+  estimates their position even out of frame, which is enough for
+  normalization, and requiring them blocked close face-and-torso framings.
 
 ### Normalization (why matching is position/size invariant)
 
