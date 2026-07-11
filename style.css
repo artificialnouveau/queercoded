@@ -55,12 +55,11 @@ body {
   margin: 0;
   font-size: 26px;
   letter-spacing: -0.5px;
-  background: var(--grad);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
   display: inline-block;
+  font-weight: 800;
 }
+.logo i { font-style: normal; text-shadow: 0 1px 6px rgba(0,0,0,.35); }
+.logo .sp { width: .3em; display: inline-block; }
 .tagline { margin: 2px 0 10px; color: var(--muted); font-size: 13px; }
 
 .tabs { display: flex; gap: 6px; }
@@ -367,7 +366,18 @@ select {
 .fam-blaze { background: rgba(123,92,255,.22); color: #c9bcff; }
 .fam-movenet { background: rgba(52,211,153,.20); color: #7ff0c6; }
 .fam-yolo { background: rgba(255,195,113,.20); color: #ffd39a; }
-.model-note { display: block; margin: 6px 2px 0; font-size: 11px; }
+.model-note {
+  display: block;
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+  background: rgba(28,15,16,.94);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 12px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.4);
+}
 
 /* Keyboard focus: a clear ring on interactive elements (mouse clicks don't
    trigger :focus-visible, so this only shows for keyboard users). */
@@ -405,3 +415,82 @@ input:focus-visible,
   background: #fff;
 }
 a { color: var(--yellow); }
+
+/* Perform: performable-code chips */
+.performable { margin: 10px 0 14px; }
+.performable h3 { margin: 0 0 6px; font-size: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-btn {
+  background: rgba(236,255,0,.14);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.chip-btn:hover { background: rgba(236,255,0,.24); }
+
+/* Closest-guess hint on the video */
+.closest-hint {
+  position: absolute;
+  left: 12px; bottom: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(0,0,0,.55);
+  color: var(--yellow);
+  font-size: 13px;
+  letter-spacing: .3px;
+  pointer-events: none;
+}
+.closest-hint[hidden] { display: none; }
+
+/* First-run framing hint */
+.intro-hint {
+  position: absolute;
+  left: 12px; right: 12px; bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(20,8,9,.92);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 28px rgba(0,0,0,.5);
+}
+.intro-hint[hidden] { display: none; }
+.intro-hint p { margin: 0; font-size: 14px; color: var(--text); }
+.intro-hint b { color: var(--yellow); }
+.intro-hint .btn { flex-shrink: 0; }
+
+/* Fake scattered stickers behind the title, bathroom-wall / conference-laptop
+   style. Decorative only (aria-hidden), never intercept clicks. */
+.topbar { overflow: hidden; }
+.topbar > *:not(.stickers) { position: relative; z-index: 1; }
+.stickers { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.sticker {
+  position: absolute;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  opacity: .5;
+  box-shadow: 0 2px 6px rgba(0,0,0,.35);
+}
+/* palette: red / yellow / deep-red / white outline */
+.sk1  { top: 6px;  left: 30%;  transform: rotate(-8deg);  background: #FF002A; color: #fff; }
+.sk2  { top: 40px; left: 44%;  transform: rotate(6deg);   background: #ECFF00; color: #1a0a0b; }
+.sk3  { top: 8px;  left: 58%;  transform: rotate(11deg);  background: #fff; color: #FF002A; border-radius: 999px; }
+.sk4  { top: 52px; left: 62%;  transform: rotate(-5deg);  background: #FF001C; color: #fff; }
+.sk5  { top: 14px; left: 76%;  transform: rotate(-13deg); background: #ECFF00; color: #1a0a0b; border-radius: 999px; }
+.sk6  { top: 48px; left: 82%;  transform: rotate(8deg);   background: #FF002A; color: #fff; }
+.sk7  { top: 4px;  left: 90%;  transform: rotate(14deg);  background: #fff; color: #750787; }
+.sk8  { top: 60px; left: 34%;  transform: rotate(-10deg); background: transparent; color: #ECFF00; border: 1.5px dashed #ECFF00; }
+.sk9  { top: 20px; left: 68%;  transform: rotate(4deg);   background: #004DFF; color: #fff; border-radius: 999px; }
+.sk10 { top: 66px; left: 52%;  transform: rotate(-6deg);  background: #ECFF00; color: #1a0a0b; }
+.sk11 { top: 30px; left: 95%;  transform: rotate(-9deg);  background: #FF002A; color: #fff; }
+.sk12 { top: 70px; left: 74%;  transform: rotate(12deg);  background: #fff; color: #FF001C; border-radius: 999px; }
+@media (max-width: 640px) { .sk8, .sk10, .sk11, .sk12 { display: none; } }

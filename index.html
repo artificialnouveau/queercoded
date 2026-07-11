@@ -8,7 +8,21 @@
 </head>
 <body>
   <header class="topbar">
-    <h1 class="logo">Queer Coded</h1>
+    <div class="stickers" aria-hidden="true">
+      <span class="sticker sk1">TRANS RIGHTS</span>
+      <span class="sticker sk2">OPEN SOURCE</span>
+      <span class="sticker sk3">she/they</span>
+      <span class="sticker sk4">NO TRACKING</span>
+      <span class="sticker sk5">git push</span>
+      <span class="sticker sk6">PRIDE</span>
+      <span class="sticker sk7">they/them</span>
+      <span class="sticker sk8">hello world</span>
+      <span class="sticker sk9">FOSS</span>
+      <span class="sticker sk10">be kind</span>
+      <span class="sticker sk11">localhost</span>
+      <span class="sticker sk12">DANCE</span>
+    </div>
+    <h1 class="logo" aria-label="Queer Coded"><span aria-hidden="true"><i style="color:#E40303">Q</i><i style="color:#FF8C00">u</i><i style="color:#FFED00">e</i><i style="color:#008026">e</i><i style="color:#004DFF">r</i><i class="sp"> </i><i style="color:#750787">C</i><i style="color:#E40303">o</i><i style="color:#FF8C00">d</i><i style="color:#008026">e</i><i style="color:#004DFF">d</i></span></h1>
     <p class="tagline">Code a movement. Move to speak.</p>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button class="tab is-active" data-tab="teach" role="tab" id="tab-teach" aria-controls="pane-teach" aria-selected="true">Teach</button>
@@ -26,6 +40,11 @@
         <canvas id="overlay"></canvas>
         <div id="bigWord" class="big-word" aria-live="polite"></div>
         <div id="bigStatus" class="big-status" aria-live="assertive"></div>
+        <div id="closestHint" class="closest-hint" hidden></div>
+        <div id="introHint" class="intro-hint" hidden>
+          <p>Stand back so your <b>head and shoulders</b> are in view. When the coloured skeleton appears on you, you're being tracked.</p>
+          <button id="introDismiss" class="btn small">Got it</button>
+        </div>
       </div>
       <div class="status-bar">
         <span id="countdown" class="pill" hidden></span>
@@ -57,6 +76,11 @@
         <h2>Perform</h2>
         <p class="muted">Just perform. The app watches your movements continuously; when one matches a saved code, its word appears above your head, is spoken aloud, and joins your phrase below. No recording or button needed.</p>
 
+        <div class="performable">
+          <h3>Your codes</h3>
+          <div id="performList" class="chips" aria-live="polite"></div>
+        </div>
+
         <label class="field">
           <span>Sensitivity <em id="threshVal"></em></span>
           <input id="thresh" type="range" min="0.06" max="0.6" step="0.01" value="0.28" />
@@ -77,8 +101,8 @@
         <label class="check"><input type="checkbox" id="speakToggle" checked /> Speak matched words aloud</label>
 
         <div class="meter">
-          <div class="meter-row"><span>Best match</span><b id="bestWord">—</b></div>
-          <div class="meter-row"><span>Distance</span><b id="bestDist">—</b></div>
+          <div class="meter-row"><span>Closest code</span><b id="bestWord">—</b></div>
+          <div class="meter-row"><span>Match strength</span><b id="matchPct">—</b></div>
           <div class="bar"><div id="bar" class="bar-fill"></div></div>
         </div>
 
@@ -97,11 +121,11 @@
       <div class="tabpane" data-pane="teach" id="pane-teach" role="tabpanel" aria-labelledby="tab-teach">
         <h2>Teach a new code</h2>
         <ol class="steps muted">
-          <li>Type the word or phrase this movement will mean, then click <b>Record movement</b>. Recording starts right away.</li>
-          <li>Perform your movement.</li>
-          <li>Cover your face with one hand and hold for the 3-second countdown to stop and save.</li>
+          <li>Type the word or phrase this movement will mean, then click <b>Record movement</b>.</li>
+          <li>Cover your face with one hand and hold for the 3-2-1 countdown. Recording starts at zero.</li>
+          <li>Perform your movement, then cover your face and hold for the 3-2-1 countdown again to stop and save.</li>
         </ol>
-        <p class="muted">The hold-to-save moment is trimmed automatically, so only your movement is saved. Record the same word more than once to add examples and make it easier to recognize.</p>
+        <p class="muted">The hand-to-face moments are trimmed automatically, so only your movement is saved. Record the same word more than once to add examples and make it easier to recognize.</p>
 
         <label class="field">
           <span>Word or phrase</span>

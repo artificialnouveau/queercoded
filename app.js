@@ -19,8 +19,9 @@ const MAX_SEG_MS = 20000;         // abandon a capture that never returns to the
 const MAX_TEACH_MS = 22000;       // safety cap so a teaching capture can't hang
 const MIN_SEG_FRAMES = 4;         // ignore too-short blips
 const COOLDOWN_MS = 1200;         // min gap before the same word fires again
-// Teaching stops when the face is covered and held for a visible 3-2-1
-// countdown, so a brief brush of the face does nothing.
+// Teaching starts and stops on the hand-over-face pose, each held for a visible
+// 3-2-1 countdown, so a brief brush of the face does nothing.
+const START_HOLD_MS = 3000;
 const STOP_HOLD_MS = 3000;
 
 // ---------- DOM ----------
@@ -36,8 +37,11 @@ const modelSel = document.getElementById("modelSel");
 const threshInput = document.getElementById("thresh");
 const threshVal = document.getElementById("threshVal");
 const bestWordEl = document.getElementById("bestWord");
-const bestDistEl = document.getElementById("bestDist");
+const matchPctEl = document.getElementById("matchPct");
 const barEl = document.getElementById("bar");
+const performListEl = document.getElementById("performList");
+const closestHintEl = document.getElementById("closestHint");
+const introHint = document.getElementById("introHint");
 const phraseEl = document.getElementById("phrase");
 const clearPhraseBtn = document.getElementById("clearPhrase");
 const triggerModeSel = document.getElementById("triggerMode");
@@ -311,6 +315,7 @@ async function initPose() {
   await backend.load();
   currentFamily = backend.family;
   recomputeWordStats(); // thresholds are per-family
+  renderPerformable();  // performable list is per-family
 }
 
 // Swap algorithm at runtime. Detection is paused (ready=false) during the
@@ -526,11 +531,11 @@ function windowFrames(durMs, now) {
 function recognizeContinuous(now) {
   const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
   if (pool.length === 0) {
-    bestWordEl.textContent = templates.length ? "no codes for this algorithm" : "no codes yet";
+    bestWordEl.textContent = templates.length ? "none for this algorithm" : "none yet";
     return;
   }
   // Skip while essentially still, so standing around never fires a match.
-  if (travelOf(windowFrames(1200, now)) < MIN_ACTIVE_TRAVEL) { barEl.style.width = "0%"; return; }
+  if (travelOf(windowFrames(1200, now)) < MIN_ACTIVE_TRAVEL) { barEl.style.width = "0%"; hideClosest(); return; }
 
   // Best (smallest) distance per word, each matched over a window its own length.
   const perWord = new Map();
@@ -548,9 +553,12 @@ function recognizeContinuous(now) {
   const best = ranked[0], second = ranked[1];
   const thresh = thresholdFor(best.word);
 
+  const pct = Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100));
   bestWordEl.textContent = best.word;
-  bestDistEl.textContent = best.dist.toFixed(3);
-  barEl.style.width = Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100)) + "%";
+  matchPctEl.textContent = Math.round(pct) + "%";
+  barEl.style.width = pct + "%";
+  // Subtle on-video hint of the closest guess once it is at least plausible.
+  if (pct >= 25) showClosest(best.word, pct); else hideClosest();
 
   const ambiguous = second && (second.dist - best.dist) < AMBIG_GAP_FRAC * thresh;
   if (best.dist < thresh && !ambiguous) {
@@ -558,6 +566,13 @@ function recognizeContinuous(now) {
     if (ok) fireWord(best.word, now);
   }
 }
+
+function showClosest(word, pct) {
+  closestHintEl.hidden = false;
+  closestHintEl.textContent = `closest: ${word} · ${Math.round(pct)}%`;
+  closestHintEl.style.opacity = (0.35 + 0.6 * pct / 100).toFixed(2);
+}
+function hideClosest() { closestHintEl.hidden = true; }
 
 const DEFAULT_SENS = 0.28;   // slider midpoint the auto thresholds scale against
 const AMBIG_GAP_FRAC = 0.18; // second-best must be at least this much farther
@@ -617,9 +632,9 @@ function matchAndFire(frames, now) {
   const best = ranked[0], second = ranked[1];
   const thresh = thresholdFor(best.word);
 
-  bestWordEl.textContent = best.word ?? "—";
-  bestDistEl.textContent = isFinite(best.dist) ? best.dist.toFixed(3) : "—";
   const pct = isFinite(best.dist) ? Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100)) : 0;
+  bestWordEl.textContent = best.word ?? "—";
+  matchPctEl.textContent = Math.round(pct) + "%";
   barEl.style.width = pct + "%";
 
   // Ambiguous when a different word is nearly as close: skip rather than guess.
@@ -726,26 +741,26 @@ function flashBigStatus(text, cls, ms = 1400) {
 // Only Teach records, so the big REC / 3-2-1 countdown overlay is Teach-only.
 // Perform is continuous and shows no recording overlay.
 function updateCaptureOverlay(now) {
+  const remain = (since, span) => Math.max(1, Math.ceil((span - (now - since)) / 1000));
   let kind = null, secs = 0;
   if (teach && teach.manual) kind = "rec";
-  else if (teach && teach.state === "capturing") {
-    if (teach.stopSince) { kind = "stop"; secs = Math.max(1, Math.ceil((STOP_HOLD_MS - (now - teach.stopSince)) / 1000)); }
-    else kind = "rec";
-  }
+  else if (teach && teach.state === "starting") { kind = "start"; secs = remain(teach.holdSince, START_HOLD_MS); }
+  else if (teach && teach.state === "capturing") kind = teach.stopSince ? (secs = remain(teach.stopSince, STOP_HOLD_MS), "stop") : "rec";
 
   if (kind === "rec") {
     bigWord.classList.remove("show");
     if (!bigStatus.classList.contains("rec")) { bigStatus.textContent = "REC"; bigStatus.className = "big-status rec show"; }
-  } else if (kind === "stop") {
+  } else if (kind === "start" || kind === "stop") {
     bigWord.classList.remove("show");
     bigStatus.textContent = secs;
-    bigStatus.className = "big-status show stop";
-  } else if (bigStatus.classList.contains("rec") || bigStatus.classList.contains("stop")) {
+    bigStatus.className = "big-status show " + (kind === "stop" ? "stop" : "count");
+  } else if (bigStatus.classList.contains("rec") || bigStatus.classList.contains("count") || bigStatus.classList.contains("stop")) {
     bigStatus.className = "big-status"; // leave SAVED flashes alone
   }
 
   if (!ready || !teach) return; // Perform manages its own status line
-  if (kind === "stop") statusEl.textContent = `Hold… saving in ${secs}`;
+  if (kind === "start") statusEl.textContent = `Keep your face covered… recording in ${secs}`;
+  else if (kind === "stop") statusEl.textContent = `Hold… saving in ${secs}`;
 }
 
 function renderPhrase() {
@@ -760,15 +775,15 @@ function startTeach() {
   if (!word) { setTeachMsg("Type a word or phrase first.", "warn"); return; }
   if (teach) return;
 
+  stopPlayback(); // clear any preview ghost from a previous save
   countdownEl.hidden = true;
   bigStatus.className = "big-status";
 
-  // Recording starts immediately on the click; there is no start countdown.
   const manual = triggerMode === "manual";
   teach = {
     word, manual,
-    state: "capturing",
-    frames: [], near: [], canStop: false, stopSince: 0,
+    state: manual ? "capturing" : "prime", // prime -> starting -> capturing
+    frames: [], near: [], holdSince: 0, canStop: false, stopSince: 0,
     startedAt: performance.now(),
   };
   if (manual) {
@@ -776,21 +791,35 @@ function startTeach() {
     setTeachMsg("Recording… click Stop & save when your movement is done.", "");
   } else {
     recordBtn.textContent = "Cancel";
-    setTeachMsg("Recording. Perform your movement, then cover your face with one hand and hold to stop and save.", "");
+    setTeachMsg("Cover your face with one hand and hold for the 3-second countdown to start. Perform, then cover your face and hold again to stop and save.", "");
   }
 }
 
 // One frame of a teaching capture. Mirrors Perform: hold face+hand for the
 // 3-second countdown to start, dance, then hold face+hand again to finish.
-// Recording begins on the Record click. Cover the face and hold for the
-// 3-second countdown to stop and save; `canStop` requires the hand to have
-// left the face once, so a hand already near the face at the start can't
-// instantly end the capture.
+// After the Record click: cover the face and hold for the start countdown to
+// begin, perform, then cover the face and hold for the stop countdown to save.
+// `canStop` requires the hand to have left the face once, so it can't stop
+// instantly right after starting.
 function teachStep(vec, rest, near, now) {
   const t = teach;
+  if (t.manual) { t.frames.push(vec); t.near.push(near); return; }
+  if (t.state === "prime") {          // waiting for the face to be covered
+    if (rest) { t.state = "starting"; t.holdSince = now; }
+    return;
+  }
+  if (t.state === "starting") {       // start countdown; uncovering cancels it
+    if (!rest) { t.state = "prime"; return; }
+    if (now - t.holdSince >= START_HOLD_MS) {
+      t.state = "capturing";
+      t.frames = [vec]; t.near = [near]; t.startedAt = now;
+      t.canStop = false; t.stopSince = 0;
+    }
+    return;
+  }
+  // capturing
   t.frames.push(vec);
   t.near.push(near);
-  if (t.manual) return;
   if (!rest) t.canStop = true;
   if (t.canStop && rest) {
     if (!t.stopSince) t.stopSince = now;
@@ -812,10 +841,18 @@ function updateTeachUI(bodyVisible, rest) {
     statusEl.textContent = "Can't see your shoulders. Adjust your framing.";
     return;
   }
-  // The big overlay owns REC / the stop countdown; keep the pill hidden.
-  countdownEl.hidden = true;
-  if (t.manual) statusEl.textContent = "Recording. Click Stop & save when done.";
-  else if (!t.stopSince) statusEl.textContent = "Recording. Cover your face and hold to stop and save.";
+  // The big overlay owns the countdown / REC states; keep the pill hidden.
+  if (t.manual || t.state === "starting" || t.state === "capturing") {
+    countdownEl.hidden = true;
+    if (t.manual) statusEl.textContent = "Recording. Click Stop & save when done.";
+    else if (t.state === "capturing" && !t.stopSince) statusEl.textContent = "Recording. Cover your face and hold to stop and save.";
+    return;
+  }
+  // prime: waiting for the face to be covered
+  countdownEl.hidden = false;
+  countdownEl.classList.remove("rec");
+  countdownEl.textContent = "COVER";
+  statusEl.textContent = "Cover your face with one hand and hold to start the countdown.";
 }
 
 function finishTeach(now, timedOut = false) {
@@ -839,17 +876,20 @@ function finishTeach(now, timedOut = false) {
   }
   const durMs = Math.max(300, Math.round(now - t.startedAt));
   const seq = resampleSeq(core, FIXED_LEN);
-  templates.push({ id: newId(), word: t.word, seq, durMs, family: currentFamily, algo: algoChoice, createdAt: Date.now() });
+  const tmpl = { id: newId(), word: t.word, seq, durMs, family: currentFamily, algo: algoChoice, createdAt: Date.now() };
+  templates.push(tmpl);
   saveTemplates();
   renderCodeList();
   flashBigStatus("SAVED", "saved");
+  startPlaybackExample(tmpl.id); // preview what was just captured, on your body
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
   let msg = n > 1
-    ? `Saved example ${n} for “${t.word}”. More examples improve recognition.`
-    : `Saved “${t.word}”. Switch to Perform to try it.`;
+    ? `Saved example ${n} for “${t.word}”. Click Record movement to add another, or type a new word.`
+    : `Saved “${t.word}”. Click Record movement to add another example, or switch to Perform to try it.`;
   if (timedOut) msg += " (Recording hit its time cap; covering your face to finish was never detected.)";
   setTeachMsg(msg, "ok");
-  wordInput.value = "";
+  // Keep the word so the next Record adds another example; select it for easy edit.
+  wordInput.select();
 }
 
 function cancelTeach() {
@@ -938,6 +978,7 @@ function drawPlayback(now) {
 
 // ---------- Codes list ----------
 function renderCodeList() {
+  renderPerformable(); // keep the Perform tab's code list in sync
   // Group templates by word (case-insensitive); each word can hold many examples.
   const groups = new Map();
   for (const t of templates) {
@@ -960,7 +1001,6 @@ function renderCodeList() {
     codeList.innerHTML = '<li class="empty">No codes saved yet. Go to Teach to make one.</li>';
     return;
   }
-  const FAM_LABEL = { blaze: "BlazePose", movenet: "MoveNet", yolo: "YOLO" };
   codeList.innerHTML = "";
   for (const g of groups.values()) {
     const count = g.items.length;
@@ -1012,6 +1052,43 @@ function renderCodeList() {
     codeList.appendChild(li);
   }
 }
+
+const FAM_LABEL = { blaze: "BlazePose", movenet: "MoveNet", yolo: "YOLO" };
+
+// Perform tab: the words you can currently perform (this algorithm family),
+// as chips that preview the ghost. Empty state nudges to Teach, and notes when
+// your codes live under a different algorithm.
+function renderPerformable() {
+  if (!performListEl) return;
+  const words = [], seen = new Set(), otherFams = new Set();
+  for (const t of templates) {
+    const fam = t.family || "blaze";
+    if (fam === currentFamily) {
+      const k = t.word.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); words.push(t.word); }
+    } else otherFams.add(fam);
+  }
+  if (words.length === 0) {
+    const note = templates.length === 0
+      ? "No codes yet."
+      : `No codes for this algorithm. Yours were taught with ${[...otherFams].map((f) => FAM_LABEL[f] || f).join(", ")} — switch back in the algorithm picker, or teach new ones here.`;
+    performListEl.innerHTML = `<span class="muted">${escapeHtml(note)}</span> <button class="btn tiny" data-goteach="1">Go to Teach</button>`;
+    return;
+  }
+  performListEl.innerHTML = words
+    .map((w) => `<button class="chip chip-btn" data-word="${encodeURIComponent(w)}" title="Preview “${escapeHtml(w)}”">${escapeHtml(w)}</button>`)
+    .join("");
+}
+
+performListEl.addEventListener("click", (e) => {
+  const goteach = e.target.closest("[data-goteach]");
+  if (goteach) { activateTab(document.getElementById("tab-teach")); return; }
+  const chip = e.target.closest("[data-word]");
+  if (!chip) return;
+  const word = decodeURIComponent(chip.dataset.word);
+  if (playback && playback.key === "word:" + word.toLowerCase()) stopPlayback();
+  else startPlayback(word);
+});
 
 codeList.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-act]");
@@ -1117,10 +1194,12 @@ function activateTab(tab, focus = false) {
     t.tabIndex = on ? 0 : -1;
   }
   document.querySelectorAll(".tabpane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
-  // Leaving a tab abandons any in-progress capture, so switching never carries
-  // a stale "recording" state (and its REC overlay) into another tab.
+  // Leaving the Teach tab mid-recording abandons it, so an active teach can
+  // never keep "recording" (REC) into Perform. Also drop any manual capture.
+  if (teach && name !== "teach") cancelTeach();
   seg = newSeg();
   manualCapturing = false;
+  hideClosest();
   if (ready) setPerformState();
   if (focus) tab.focus();
 }
@@ -1189,11 +1268,19 @@ function escapeHtml(s) {
 }
 
 // ---------- Boot ----------
+// First-run framing hint, shown once until dismissed.
+const INTRO_KEY = "queercoded.seenIntro";
+document.getElementById("introDismiss").addEventListener("click", () => {
+  introHint.hidden = true;
+  localStorage.setItem(INTRO_KEY, "1");
+});
+
 (async function boot() {
   threshVal.textContent = threshInput.value;
   modelSel.value = algoChoice;
   renderCodeList();
   renderPhrase();
+  if (!localStorage.getItem(INTRO_KEY)) introHint.hidden = false;
 
   // The pose engine is a ~15 MB first-time download (wasm + model). Kick it off
   // in parallel with the camera permission so the two overlap, and reassure the
