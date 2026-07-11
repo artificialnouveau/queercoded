@@ -424,14 +424,17 @@ const MIN_FRAME_MS = 33;
 let inflight = false;
 let lastDetectAt = 0;
 async function loop() {
+  // Schedule the next frame FIRST, so a thrown error inside a frame can never
+  // stop the loop (that is what froze detection). Errors are logged, not fatal.
+  requestAnimationFrame(loop);
   const t = performance.now();
   if (ready && backend && !inflight && video.readyState >= 2 && t - lastDetectAt >= MIN_FRAME_MS) {
     lastDetectAt = t;
     inflight = true;
     try { await runFrame(); }
+    catch (e) { console.error("frame error:", e); }
     finally { inflight = false; }
   }
-  requestAnimationFrame(loop);
 }
 
 async function runFrame() {
@@ -452,9 +455,12 @@ async function runFrame() {
         const vec = normalizePose(lms);
         // Live hip-centre and torso length, so playback can be drawn on the
         // performer's actual body (same normalization the stored seq uses).
-        const cx = (lms[23].x + lms[24].x) / 2, cy = (lms[23].y + lms[24].y) / 2;
-        const shx = (lms[11].x + lms[12].x) / 2, shy = (lms[11].y + lms[12].y) / 2;
-        liveFrame = { cx, cy, torso: Math.hypot(shx - cx, shy - cy) || 1e-6, at: now };
+        const lh = lms[23], rh = lms[24], ls = lms[11], rs = lms[12];
+        if (lh && rh && ls && rs) {
+          const cx = (lh.x + rh.x) / 2, cy = (lh.y + rh.y) / 2;
+          const shx = (ls.x + rs.x) / 2, shy = (ls.y + rs.y) / 2;
+          liveFrame = { cx, cy, torso: Math.hypot(shx - cx, shy - cy) || 1e-6, at: now };
+        }
         restNow = isResting(lms);
         const nearNow = isNearFace();
         if (teach) {

@@ -369,13 +369,13 @@ select {
 .model-note {
   display: block;
   margin: 8px 0 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--text);
-  background: rgba(28,15,16,.94);
+  font-size: 13px;
+  line-height: 1.5;
+  color: #fff;
+  background: rgba(28,15,16,.96);
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   box-shadow: 0 8px 28px rgba(0,0,0,.4);
 }
 
