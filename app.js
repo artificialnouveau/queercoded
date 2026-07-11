@@ -602,8 +602,10 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
   }
   // Legs as continuous hip-knee-ankle strokes. A leg whose data is missing or
   // collapsed (taught with the lower body out of frame) is drawn standing
-  // straight down instead, so the figure is never legless.
+  // straight down instead, splayed slightly outward so the two default legs
+  // never fuse into one column.
   const legLen = sc * 0.95; // hip-to-knee and knee-to-ankle length
+  const midHipX = lhP.v && rhP.v ? (lhP.x + rhP.x) / 2 : cx;
   for (const [hip, knee, ank, toeI] of [[23, 25, 27, 31], [24, 26, 28, 32]]) {
     const H = P(hip);
     if (!H.v) continue;
@@ -611,44 +613,47 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
     const degenerate = !K.v || !A.v ||
       Math.hypot(A.x - H.x, A.y - H.y) < sc * 0.6;
     if (degenerate) {
-      K = { x: H.x, y: H.y + legLen, v: true };
-      A = { x: H.x, y: H.y + legLen * 2, v: true };
+      const dir = H.x >= midHipX ? 1 : -1; // splay away from the midline
+      K = { x: H.x + dir * sc * 0.1, y: H.y + legLen, v: true };
+      A = { x: H.x + dir * sc * 0.18, y: H.y + legLen * 2, v: true };
     }
-    stroke([H, K, A], s * 0.105);
+    stroke([H, K, A], sc * 0.34);
     // Foot: toward the toes if known, else a small default foot.
     const T = P(toeI);
     const foot = !degenerate && T.v
       ? T
-      : { x: A.x - s * 0.06, y: A.y + s * 0.02, v: true };
-    stroke([A, foot], s * 0.08);
+      : { x: A.x - sc * 0.28, y: A.y + sc * 0.1, v: true };
+    stroke([A, foot], sc * 0.26);
   }
-  // Neck + head.
+  // Neck + head, at human proportions: the head is a fraction of the torso,
+  // not a lollipop swallowing it.
   const nose = P(0);
   const hx = nose.v ? nose.x : (lsP.x + rsP.x) / 2;
-  const hy = nose.v ? nose.y : (lsP.y + rsP.y) / 2 - s * 0.14;
-  if (lsP.v && rsP.v) stroke([{ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }], s * 0.06);
+  const hy = nose.v ? nose.y : (lsP.y + rsP.y) / 2 - sc * 0.55;
+  if (lsP.v && rsP.v) stroke([{ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }], sc * 0.2);
   ctx.beginPath();
-  ctx.arc(hx, hy, s * 0.105, 0, Math.PI * 2);
+  ctx.arc(hx, hy, sc * 0.27, 0, Math.PI * 2);
   ctx.fill();
-  // Arms as continuous shoulder-elbow-wrist strokes, capped with a hand disc.
+  // Arms as continuous shoulder-elbow-wrist strokes; when the hand landmarks
+  // exist the stroke continues through the hand, so the arm simply ends in a
+  // hand rather than a stuck-on disc.
   for (const [sho, elb, wri, k1, k2] of [[11, 13, 15, 17, 19], [12, 14, 16, 18, 20]]) {
     const S = P(sho), E = P(elb), W = P(wri);
     if (!S.v || !E.v || !W.v) continue;
-    stroke([S, E, W], s * 0.09);
+    const pts = [S, E, W];
     const a = P(k1), b = P(k2);
-    let hx2 = W.x, hy2 = W.y, cnt = 1;
-    if (a.v) { hx2 += a.x; hy2 += a.y; cnt++; }
-    if (b.v) { hx2 += b.x; hy2 += b.y; cnt++; }
-    ctx.beginPath();
-    ctx.arc(hx2 / cnt, hy2 / cnt, s * 0.05, 0, Math.PI * 2);
-    ctx.fill();
+    if (a.v || b.v) {
+      const n = (a.v ? 1 : 0) + (b.v ? 1 : 0);
+      pts.push({ x: ((a.v ? a.x : 0) + (b.v ? b.x : 0)) / n, y: ((a.v ? a.y : 0) + (b.v ? b.y : 0)) / n });
+    }
+    stroke(pts, sc * 0.3);
   }
 }
 function drawFigureCell(ctx, frame, x0, s) {
   const cx = x0 + s * 0.5;
-  const cy = s * 0.42;     // hips above centre so default legs fit below
-  const sc = s * 0.17;     // torso length in px
-  const off = s * 0.05;    // yellow print offset
+  const cy = s * 0.4;      // hips above centre so default legs fit below
+  const sc = s * 0.19;     // torso length in px
+  const off = s * 0.045;   // yellow print offset
   // Yellow layer first (offset), then red on top: the riso registration look.
   ctx.save();
   ctx.translate(off, off * 0.7);
@@ -657,7 +662,7 @@ function drawFigureCell(ctx, frame, x0, s) {
   paintFigure(ctx, frame, cx, cy, sc, s, "#FF002A");
 }
 // A row of `count` evenly-spaced frames from a stored seq, as one canvas.
-function buildPoseStrip(seq, { count = 3, size = 74 } = {}) {
+function buildPoseStrip(seq, { count = 3, size = 96 } = {}) {
   const canvas = document.createElement("canvas");
   canvas.className = "pose-strip";
   const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -1617,7 +1622,7 @@ function finishTeach(now, timedOut = false) {
 function showTeachPreview(seq) {
   if (!teachPreview) return;
   teachPreview.innerHTML = '<div class="teach-preview-label">Saved as a pose card:</div>';
-  try { teachPreview.appendChild(buildPoseStrip(seq, { count: 3, size: 84 })); } catch {}
+  try { teachPreview.appendChild(buildPoseStrip(seq, { count: 3, size: 100 })); } catch {}
   teachPreview.hidden = false;
 }
 function clearTeachPreview() {
@@ -2262,7 +2267,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v22 (2026-07-11)");
+  console.log("Queercoded build v23 (2026-07-11)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
