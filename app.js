@@ -552,7 +552,6 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
   ctx.strokeStyle = color;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  ctx.lineWidth = s * 0.15;
   // Torso as a filled quad so the body reads as a solid silhouette.
   const torso = [P(11), P(12), P(24), P(23)].filter((p) => p.v);
   if (torso.length >= 3) {
@@ -562,7 +561,8 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
     ctx.closePath();
     ctx.fill();
   }
-  // Limbs as thick round-capped strokes.
+  // Limbs slightly slimmer than before, so an arm reads apart from the body.
+  ctx.lineWidth = s * 0.11;
   ctx.beginPath();
   for (const [a, b] of FIG_BONES) {
     const A = P(a), B = P(b);
@@ -571,12 +571,45 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
     ctx.lineTo(B.x, B.y);
   }
   ctx.stroke();
-  // Head: a disc at the nose, or just above the shoulders if the nose is unseen.
+  // Hands: a disc just past each wrist (centred on the hand landmarks when a
+  // 33-point code has them), so a raised hand is legible, not just an arm.
+  for (const [w, k1, k2] of [[15, 17, 19], [16, 18, 20]]) {
+    const W = P(w);
+    if (!W.v) continue;
+    const a = P(k1), b = P(k2);
+    let hx2 = W.x, hy2 = W.y, cnt = 1;
+    if (a.v) { hx2 += a.x; hy2 += a.y; cnt++; }
+    if (b.v) { hx2 += b.x; hy2 += b.y; cnt++; }
+    ctx.beginPath();
+    ctx.arc(hx2 / cnt, hy2 / cnt, s * 0.055, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Feet: a short stroke from each ankle toward the toes.
+  ctx.lineWidth = s * 0.085;
+  for (const [ank, toe] of [[27, 31], [28, 32]]) {
+    const A = P(ank);
+    if (!A.v) continue;
+    const T = P(toe);
+    ctx.beginPath();
+    ctx.moveTo(A.x, A.y);
+    if (T.v) ctx.lineTo(T.x, T.y);
+    else ctx.lineTo(A.x - s * 0.06, A.y + s * 0.025);
+    ctx.stroke();
+  }
+  // Head on a short neck: a disc at the nose, or above the shoulders if the
+  // nose is unseen.
   const nose = P(0), ls = P(11), rs = P(12);
   const hx = nose.v ? nose.x : (ls.x + rs.x) / 2;
   const hy = nose.v ? nose.y : (ls.y + rs.y) / 2 - s * 0.14;
+  if (ls.v && rs.v) {
+    ctx.lineWidth = s * 0.07;
+    ctx.beginPath();
+    ctx.moveTo((ls.x + rs.x) / 2, (ls.y + rs.y) / 2);
+    ctx.lineTo(hx, hy);
+    ctx.stroke();
+  }
   ctx.beginPath();
-  ctx.arc(hx, hy, s * 0.12, 0, Math.PI * 2);
+  ctx.arc(hx, hy, s * 0.11, 0, Math.PI * 2);
   ctx.fill();
 }
 function drawFigureCell(ctx, frame, x0, s) {
