@@ -42,6 +42,8 @@ const ideChrome = document.getElementById("ideChrome");
 const ideGutter = document.getElementById("ideGutter");
 const ideLnCol = document.getElementById("ideLnCol");
 const ideBtn = document.getElementById("ideBtn");
+const danceCount = document.getElementById("danceCount");
+const countDots = document.getElementById("countDots");
 
 const threshInput = document.getElementById("thresh");
 const threshVal = document.getElementById("threshVal");
@@ -2184,31 +2186,64 @@ function startPlaybackExample(id) {
 
 function stopPlayback() {
   playback = null;
+  danceCount.hidden = true;
+  countDots.hidden = true;
   if (ready) setPerformState();
   renderCodeList();
 }
 
-function drawPlayback(now) {
-  const pb = playback;
-  const cur = pb.items[pb.idx];
-  const dur = Math.min(5000, Math.max(800, cur.durMs || 2000));
-  const p = (now - pb.t0) / dur;
-  if (p >= 1) {
-    pb.idx++;
-    pb.t0 = now;
-    if (pb.idx >= pb.items.length) { stopPlayback(); return; }
-    return;
+// ---- Dance-tutorial playback ----
+// Every example plays like a dance class: a "5 6 7 8" count-in while the
+// ghost holds its start pose, then the movement on counts 1-8 (big riso
+// numeral + the dot strip), faint onion-skin echoes behind the figure so
+// the direction of travel reads, and pulsing rings marking the joints that
+// actually carry this move. A soft tick sounds on every count (respects the
+// Ping toggle).
+const FOCUS_CANDIDATES = [0, 13, 14, 15, 16, 25, 26, 27, 28];
+const FOCUS_NAMES = { 0: "head", 13: "elbows", 14: "elbows", 15: "hands", 16: "hands", 25: "knees", 26: "knees", 27: "feet", 28: "feet" };
+// Which joints move most across the stored frames: those are the move.
+function focusJoints(seq) {
+  const travel = new Map();
+  let max = 0;
+  for (const i of FOCUS_CANDIDATES) {
+    let t = 0;
+    for (let f = 1; f < seq.length; f++) {
+      t += Math.hypot(seq[f][i * 2] - seq[f - 1][i * 2], seq[f][i * 2 + 1] - seq[f - 1][i * 2 + 1]);
+    }
+    travel.set(i, t);
+    if (t > max) max = t;
   }
-
-  // Anchor the ghost on the live body when one is visible (so it dances on the
-  // performer at their position and size), else fall back to a fixed spot.
-  const live = liveFrame && (now - liveFrame.at < 300);
-  const ax = live ? liveFrame.cx : GHOST_CX;
-  const ay = live ? liveFrame.cy : GHOST_CY;
-  const asc = live ? liveFrame.torso : GHOST_SCALE;
-
-  // Tween between the two nearest stored frames.
-  const f = p * (FIXED_LEN - 1);
+  if (!(max > 0)) return { joints: [], label: "" };
+  const joints = FOCUS_CANDIDATES
+    .filter((i) => travel.get(i) >= max * 0.55)
+    .sort((a, b) => travel.get(b) - travel.get(a))
+    .slice(0, 3);
+  const label = [...new Set(joints.map((i) => FOCUS_NAMES[i]))].join(" and ");
+  return { joints, label };
+}
+// A short metronome tick; the downbeats (1 and 5) land higher and louder.
+function countTick(strong) {
+  if (!soundOn) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const t = audioCtx.currentTime;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(strong ? 1320 : 880, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(strong ? 0.1 : 0.06, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start(t);
+    o.stop(t + 0.08);
+  } catch { /* audio is decoration; never let it break playback */ }
+}
+// The stored seq at progress p (0..1), tweened, in image-normalized coords.
+function ghostFrameAt(cur, p, ax, ay, asc) {
+  const f = Math.max(0, Math.min(1, p)) * (FIXED_LEN - 1);
   const i = Math.floor(f);
   const frac = f - i;
   const a = cur.seq[i], b = cur.seq[Math.min(i + 1, FIXED_LEN - 1)];
@@ -2217,37 +2252,126 @@ function drawPlayback(now) {
     const vx = a[k * 2] * (1 - frac) + b[k * 2] * frac;
     const vy = a[k * 2 + 1] * (1 - frac) + b[k * 2 + 1] * frac;
     // Slots a 17-point code never filled stay at the origin; mark them
-    // invisible so drawSkeleton skips them instead of drawing to (0,0).
+    // invisible so the painters skip them instead of drawing to (0,0).
     const filled = a[k * 2] !== 0 || a[k * 2 + 1] !== 0 || b[k * 2] !== 0 || b[k * 2 + 1] !== 0;
     ghost.push({ x: ax + vx * asc, y: ay + vy * asc, visibility: filled ? 1 : 0 });
   }
+  return ghost;
+}
+// Ghost coords are normalized (0..1); the painters want pixels.
+const ghostPx = (ghost) => (i) => {
+  const p = ghost[i];
+  return p && p.visibility > 0
+    ? { x: p.x * overlay.width, y: p.y * overlay.height, v: true }
+    : { x: 0, y: 0, v: false };
+};
+function ghostTorso(GP) {
+  const ls = GP(11), rs = GP(12), lh = GP(23), rh = GP(24);
+  if (!ls.v || !rs.v || (!lh.v && !rh.v)) return 0;
+  const hipX = lh.v && rh.v ? (lh.x + rh.x) / 2 : (lh.v ? lh.x : rh.x);
+  const hipY = lh.v && rh.v ? (lh.y + rh.y) / 2 : (lh.v ? lh.y : rh.y);
+  return Math.hypot((ls.x + rs.x) / 2 - hipX, (ls.y + rs.y) / 2 - hipY);
+}
+function drawPlayback(now) {
+  const pb = playback;
+  const cur = pb.items[pb.idx];
+  const dur = Math.min(5000, Math.max(800, cur.durMs || 2000));
+  const beat = dur / 8;
+  const lead = beat * 4; // the "5 6 7 8" count-in
+  const tRel = now - pb.t0;
+  if (tRel >= lead + dur) {
+    pb.idx++;
+    pb.t0 = now;
+    pb.lastCount = 0;
+    if (pb.idx >= pb.items.length) { stopPlayback(); return; }
+    return;
+  }
+  if (pb.focusFor !== cur) {
+    pb.focusFor = cur;
+    pb.focus = focusJoints(cur.seq);
+  }
+  const leading = tRel < lead;
+  const p = leading ? 0 : (tRel - lead) / dur;
+  const count = leading
+    ? 5 + Math.min(3, Math.floor(tRel / beat))
+    : 1 + Math.min(7, Math.floor(p * 8));
 
-  // The ghost is printed as a riso figure (grainy red ink over a yellow
-  // halo), same visual language as the pose cards but full-size and moving.
-  // Codes with no usable torso fall back to the readable white wireframe.
-  // Ghost coords are normalized (0..1); paintBody wants pixels.
-  const GP = (i) => {
-    const p = ghost[i];
-    return p && p.visibility > 0
-      ? { x: p.x * overlay.width, y: p.y * overlay.height, v: true }
-      : { x: 0, y: 0, v: false };
-  };
-  const gls = GP(11), grs = GP(12), glh = GP(23), grh = GP(24);
-  const hipX = glh.v && grh.v ? (glh.x + grh.x) / 2 : (glh.v ? glh.x : grh.x);
-  const hipY = glh.v && grh.v ? (glh.y + grh.y) / 2 : (glh.v ? glh.y : grh.y);
-  const gsc = gls.v && grs.v && (glh.v || grh.v)
-    ? Math.hypot((gls.x + grs.x) / 2 - hipX, (gls.y + grs.y) / 2 - hipY)
-    : 0;
+  // Anchor the ghost on the live body when one is visible (so it dances on the
+  // performer at their position and size), else fall back to a fixed spot.
+  const live = liveFrame && (now - liveFrame.at < 300);
+  const ax = live ? liveFrame.cx : GHOST_CX;
+  const ay = live ? liveFrame.cy : GHOST_CY;
+  const asc = live ? liveFrame.torso : GHOST_SCALE;
+
+  // Onion-skin echoes: two slightly older positions in flat translucent red
+  // under the figure, so where the move came from stays readable.
+  if (!leading) {
+    for (const [back, alpha] of [[0.12, 0.1], [0.06, 0.2]]) {
+      if (p - back <= 0) continue;
+      const GPe = ghostPx(ghostFrameAt(cur, p - back, ax, ay, asc));
+      const sce = ghostTorso(GPe);
+      if (sce > 8) {
+        octx.save();
+        octx.globalAlpha = alpha;
+        paintBody(octx, GPe, sce, "#FF002A");
+        octx.restore();
+      }
+    }
+  }
+
+  // The ghost itself: the grainy riso print figure. Codes with no usable
+  // torso fall back to the readable white wireframe.
+  const ghost = ghostFrameAt(cur, p, ax, ay, asc);
+  const GP = ghostPx(ghost);
+  const gsc = ghostTorso(GP);
   if (gsc > 8) {
     paintRisoGhost(GP, gsc);
+    // Focus rings pulse on the joints that carry this move; during the
+    // count-in they sit on the start pose, telling you where to look.
+    const pulse = 1 + 0.15 * Math.sin(now / 130);
+    for (const j of pb.focus.joints) {
+      const q = GP(j);
+      if (!q.v) continue;
+      const r = Math.max(10, gsc * 0.22) * pulse;
+      octx.beginPath();
+      octx.arc(q.x, q.y, r, 0, Math.PI * 2);
+      octx.strokeStyle = "rgba(236,255,0,0.9)";
+      octx.lineWidth = 3;
+      octx.stroke();
+      octx.beginPath();
+      octx.arc(q.x, q.y, r * 1.35, 0, Math.PI * 2);
+      octx.strokeStyle = "rgba(236,255,0,0.35)";
+      octx.lineWidth = 2;
+      octx.stroke();
+    }
   } else {
     const conns = connectionsForFamily(cur.family || "blaze");
     drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
     drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
   }
 
+  // Counts: numeral + dot strip update only when the count changes.
+  if (pb.lastCount !== count || pb.lastLead !== leading) {
+    pb.lastCount = count;
+    pb.lastLead = leading;
+    danceCount.hidden = false;
+    danceCount.textContent = String(count);
+    danceCount.classList.toggle("lead", leading);
+    danceCount.classList.remove("tick");
+    void danceCount.offsetWidth; // restart the pop animation
+    danceCount.classList.add("tick");
+    countDots.hidden = false;
+    const kids = countDots.children;
+    for (let k = 0; k < kids.length; k++) {
+      kids[k].className = !leading && k < count ? (k === count - 1 ? "cur" : "on") : "";
+    }
+    countTick(!leading && (count === 1 || count === 5));
+  }
+
   statusEl.textContent =
-    `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
+    `Playing “${pb.label}”` +
+    (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "") +
+    (pb.focus.label ? ` · watch the ${pb.focus.label}` : "");
 }
 
 // ---------- Codes list ----------
@@ -2776,7 +2900,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v33 (2026-07-12)");
+  console.log("Queercoded build v34 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
