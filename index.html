@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Queercoded: move to speak</title>
-  <link rel="stylesheet" href="style.css?v=36" />
+  <link rel="stylesheet" href="style.css?v=37" />
 </head>
 <body>
   <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
@@ -57,6 +57,14 @@
         <!-- Dance-tutorial playback: the count numeral and the 8-count strip -->
         <div id="danceCount" class="dance-count" hidden aria-hidden="true"></div>
         <div id="countDots" class="count-dots" hidden aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <!-- Playback practice controls: tempo, loop, step-through -->
+        <div id="pbControls" class="pb-controls" hidden>
+          <button data-speed="0.5" title="Half speed">0.5x</button>
+          <button data-speed="0.75" title="Three-quarter speed">0.75x</button>
+          <button data-speed="1" class="on" title="Full speed">1x</button>
+          <button id="pbLoopBtn" title="Repeat until stopped">Loop</button>
+          <button id="pbStepsBtn" title="Pause on every count until you hit the pose; Space skips a step">Steps</button>
+        </div>
         <div id="bigWord" class="big-word" aria-live="polite"></div>
         <div id="bigStatus" class="big-status" aria-live="assertive"></div>
         <div id="closestHint" class="closest-hint" hidden></div>
@@ -215,6 +223,6 @@
     </aside>
   </main>
 
-  <script type="module" src="app.js?v=36"></script>
+  <script type="module" src="app.js?v=37"></script>
 </body>
 </html>

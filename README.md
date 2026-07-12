@@ -116,9 +116,14 @@ The URL is remembered in the browser. MoveNet and BlazePose need no setup.
   slider and the live distance readout to calibrate.
 - **About:** what the app does and a plain-language privacy summary (everything
   runs locally; no data is sent anywhere).
-- **Codes:** play back a whole word or a single example (dance along with the
-  ghost skeleton), rename, delete a word or just one of its examples, and
-  export/import all codes as JSON.
+- **Codes:** play back a whole word or a single example and dance along with
+  the ghost, tutorial style: a 5-6-7-8 count-in, counts 1-8 with ticks, focus
+  rings that fill when your joint is in place (with arrows when it is not),
+  and dashed hints showing where each hand travels next. Practice controls on
+  the video offer half/three-quarter speed, looping, and a step-through mode
+  that pauses on every count until you hit the pose (Space skips). Rehearse
+  plays the move once, then counts you in to perform it from memory and
+  scores your attempt. Rename, delete, and export/import as JSON.
 - **AlgoDance:** the zine, read full screen one page at a time. Flip with a
   click, the chevrons, or the arrow keys; the header collapses while reading
   (the floating Menu button brings it back). Rendered with pdf.js, loaded only

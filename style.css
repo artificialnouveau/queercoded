@@ -220,6 +220,32 @@ body.rot90 .video-wrap { width: 100%; height: auto; max-width: none; }
 .count-dots i.on { background: rgba(236,255,0,.85); }
 .count-dots i.cur { background: #FF002A; box-shadow: 0 0 12px rgba(255,0,42,.9); }
 
+/* Playback practice controls (visible only while a code plays) */
+.pb-controls {
+  position: absolute;
+  bottom: 5%;
+  left: 12px;
+  display: flex;
+  gap: 6px;
+  z-index: 4;
+}
+.pb-controls button {
+  pointer-events: auto;
+  background: rgba(10, 10, 14, .65);
+  color: #ddd;
+  border: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 999px;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.pb-controls button.on {
+  background: #ECFF00;
+  color: #111;
+  border-color: #ECFF00;
+  font-weight: 700;
+}
+
 /* Matched word, anchored just above the tracked head (left/top set from JS
    every frame; translate lifts the text fully above the anchor point). */
 .big-word {

@@ -38,6 +38,7 @@ const bigStatus = document.getElementById("bigStatus");
 const modelSel = document.getElementById("modelSel");
 const danceCount = document.getElementById("danceCount");
 const countDots = document.getElementById("countDots");
+const pbControls = document.getElementById("pbControls");
 
 const threshInput = document.getElementById("thresh");
 const threshVal = document.getElementById("threshVal");
@@ -87,7 +88,11 @@ let wordStats = new Map();
 let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
-let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
+let playback = null;          // ghost playback of a saved code (see startPlaybackItems)
+let pbSpeed = 1;              // playback tempo: 0.5 / 0.75 / 1
+let pbLoop = false;           // repeat playback until stopped
+let pbSteps = false;          // pause on every count until the pose is hit
+let liveLmsNow = null;        // {lms, at} latest smoothed live pose, for follow feedback
 let ghostPreviewTimer = null; // delayed post-save ghost replay
 // Latest live-body anchor {cx, cy, torso, at}, used to project the playback
 // ghost onto the performer instead of a fixed spot on screen.
@@ -1003,9 +1008,11 @@ async function runFrame() {
     // frames too, so trails fade out instead of freezing when you leave.
     drawPresence(lms, now);
     if (lms) {
+      liveLmsNow = { lms, at: now }; // follow-along feedback reads this
       if (keyLandmarksVisible(lms)) {
         bodyVisible = true;
         const vec = normalizePose(lms);
+        if (playback?.capture) playback.capture.push(vec); // rehearse: your turn
         // Live hip-centre and torso length, so playback can be drawn on the
         // performer's actual body (same normalization the stored seq uses).
         const lh = lms[23], rh = lms[24], ls = lms[11], rs = lms[12];
@@ -2022,7 +2029,29 @@ const GHOST_SCALE = 0.18; // torso length as a fraction of image space
 function startPlaybackItems(items, label, key) {
   if (!items || items.length === 0) return;
   clearTimeout(ghostPreviewTimer); // a pending post-save replay must not hijack this
-  playback = { items, label, key, idx: 0, t0: performance.now() };
+  playback = { items, label, key, idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0, mode: "play" };
+  pbControls.hidden = false;
+  renderCodeList();
+}
+// Rehearse: the ghost demonstrates once with counts, then YOUR TURN — a
+// count-in with the start pose held faintly, you perform from memory, and
+// your attempt is scored against the word with the same matcher Perform
+// uses. Cycles demo -> your turn -> result until stopped.
+function startRehearse(word) {
+  const all = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase());
+  if (!all.length) return;
+  clearTimeout(ghostPreviewTimer);
+  const fam = all.filter((t) => (t.family || "blaze") === currentFamily);
+  const items = fam.length ? fam : all;
+  playback = {
+    items: [playbackReps(items)[0]],
+    allItems: items,
+    label: word,
+    key: "rh:" + word.toLowerCase(),
+    idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0,
+    mode: "rehearse", phase: "demo",
+  };
+  pbControls.hidden = false;
   renderCodeList();
 }
 // Collapse near-duplicate examples for word playback: takes whose DTW distance
@@ -2061,9 +2090,36 @@ function stopPlayback() {
   playback = null;
   danceCount.hidden = true;
   countDots.hidden = true;
+  pbControls.hidden = true;
   if (ready) setPerformState();
   renderCodeList();
 }
+// Practice controls: tempo chips, loop, step-through.
+pbControls.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.speed) {
+    pbSpeed = parseFloat(b.dataset.speed);
+    for (const x of pbControls.querySelectorAll("[data-speed]")) x.classList.toggle("on", x === b);
+  } else if (b.id === "pbLoopBtn") {
+    pbLoop = !pbLoop;
+    b.classList.toggle("on", pbLoop);
+  } else if (b.id === "pbStepsBtn") {
+    pbSteps = !pbSteps;
+    b.classList.toggle("on", pbSteps);
+    // Off: release any freeze and stop re-freezing. On: arm from here.
+    if (playback) { playback.waiting = false; playback.stepDone = pbSteps ? 0 : 8; }
+  }
+});
+// Space skips a frozen step (unless typing, and without stealing the manual
+// hold-to-capture Spacebar, which only listens in manual trigger mode).
+window.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || !playback?.waiting || e.repeat) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+  e.preventDefault();
+  playback.skipStep = true;
+});
 
 // ---- Dance-tutorial playback ----
 // Every example plays like a dance class: a "5 6 7 8" count-in while the
@@ -2145,91 +2201,278 @@ function ghostTorso(GP) {
   const hipY = lh.v && rh.v ? (lh.y + rh.y) / 2 : (lh.v ? lh.y : rh.y);
   return Math.hypot((ls.x + rs.x) / 2 - hipX, (ls.y + rs.y) / 2 - hipY);
 }
+// Live-follow feedback: for each focus joint, where the performer's SAME
+// joint currently is relative to the ghost's. `on` within about half a
+// torso of the target.
+function pbTargets(GP, gsc, joints, now) {
+  const res = new Map();
+  const lv = liveLmsNow && now - liveLmsNow.at < 300 ? liveLmsNow.lms : null;
+  if (!lv) return res;
+  for (const j of joints) {
+    const g = GP(j);
+    const p = lv[j];
+    if (!g.v || !p || (p.visibility ?? 0) < 0.3) continue;
+    const x = p.x * overlay.width, y = p.y * overlay.height;
+    const d = Math.hypot(x - g.x, y - g.y);
+    res.set(j, { x, y, d, on: d < gsc * 0.55 });
+  }
+  return res;
+}
+// A red arrow from the performer's joint toward the ghost's ring: which way
+// to move, without words.
+function drawGuideArrow(from, to, gsc) {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (len < gsc * 0.3) return;
+  const ux = dx / len, uy = dy / len;
+  const ex = to.x - ux * gsc * 0.28, ey = to.y - uy * gsc * 0.28;
+  const ah = Math.min(14, Math.max(7, gsc * 0.12));
+  octx.save();
+  octx.strokeStyle = "rgba(255,0,42,0.85)";
+  octx.fillStyle = "rgba(255,0,42,0.85)";
+  octx.lineWidth = 3;
+  octx.beginPath();
+  octx.moveTo(from.x, from.y);
+  octx.lineTo(ex, ey);
+  octx.stroke();
+  octx.beginPath();
+  octx.moveTo(ex, ey);
+  octx.lineTo(ex - ux * ah - uy * ah * 0.5, ey - uy * ah + ux * ah * 0.5);
+  octx.lineTo(ex - ux * ah + uy * ah * 0.5, ey - uy * ah - ux * ah * 0.5);
+  octx.closePath();
+  octx.fill();
+  octx.restore();
+}
+// Anticipation cue: a dashed arc tracing where each focus joint travels over
+// the NEXT count, with an arrowhead, so the learner can lead instead of lag.
+function drawPathHints(cur, p, ax, ay, asc, joints) {
+  octx.save();
+  octx.setLineDash([6, 6]);
+  octx.strokeStyle = "rgba(255,255,255,0.55)";
+  octx.fillStyle = "rgba(255,255,255,0.55)";
+  octx.lineWidth = 2;
+  for (const j of joints) {
+    const pts = [];
+    for (let s = 0; s <= 5; s++) {
+      const g = ghostFrameAt(cur, Math.min(1, p + (s / 5) * 0.125), ax, ay, asc)[j];
+      if (!g || g.visibility <= 0) { pts.length = 0; break; }
+      pts.push({ x: g.x * overlay.width, y: g.y * overlay.height });
+    }
+    if (pts.length < 2) continue;
+    const a = pts[pts.length - 2], b = pts[pts.length - 1];
+    if (Math.hypot(b.x - pts[0].x, b.y - pts[0].y) < 12) continue; // barely moves: no cue
+    octx.beginPath();
+    octx.moveTo(pts[0].x, pts[0].y);
+    for (const q of pts.slice(1)) octx.lineTo(q.x, q.y);
+    octx.stroke();
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const l = Math.hypot(dx, dy) || 1;
+    const ux = dx / l, uy = dy / l;
+    octx.save();
+    octx.setLineDash([]);
+    octx.beginPath();
+    octx.moveTo(b.x, b.y);
+    octx.lineTo(b.x - ux * 10 - uy * 5, b.y - uy * 10 + ux * 5);
+    octx.lineTo(b.x - ux * 10 + uy * 5, b.y - uy * 10 - ux * 5);
+    octx.closePath();
+    octx.fill();
+    octx.restore();
+  }
+  octx.restore();
+}
+// Score a rehearse attempt against the word's examples, same matcher as
+// Perform (DTW + the word's own threshold).
+function scoreRehearse(pb) {
+  const frames = trimStillEnds(pb.capture || []);
+  if (!frames || frames.length < MIN_SEG_FRAMES) {
+    return { ok: false, big: "TOO LITTLE", msg: "Too little movement seen. Watch once more, then go bigger. Again…" };
+  }
+  const live = resampleSeq(frames, FIXED_LEN);
+  let best = Infinity;
+  for (const t of pb.allItems) best = Math.min(best, dtw(live, t.seq));
+  const thr = thresholdFor(pb.label);
+  const pct = Math.max(0, Math.min(100, Math.round((1 - best / (thr * 1.8)) * 100)));
+  const ok = best < thr;
+  const hint = pb.focus?.label ? ` Watch the ${pb.focus.label}.` : "";
+  return ok
+    ? { ok, pct, big: `${pct}%`, msg: `Nailed it: ${pct}% match. Again…` }
+    : { ok, pct, big: `${pct}%`, msg: `${pct}%, not quite.${hint} Again…` };
+}
 function drawPlayback(now) {
   const pb = playback;
-  const cur = pb.items[pb.idx];
+  // Playback runs on its OWN clock: the speed chips stretch it, Steps mode
+  // pauses it, and wall time only feeds it.
+  const dt = pb.lastNow == null ? 0 : Math.min(100, now - pb.lastNow);
+  pb.lastNow = now;
+  if (!pb.waiting) pb.tRel += dt * pbSpeed;
+
+  const cur = pb.items[Math.min(pb.idx, pb.items.length - 1)];
   const dur = Math.min(5000, Math.max(800, cur.durMs || 2000));
   const beat = dur / 8;
   const lead = beat * 4; // the "5 6 7 8" count-in
-  const tRel = now - pb.t0;
-  if (tRel >= lead + dur) {
-    pb.idx++;
-    pb.t0 = now;
-    pb.lastCount = 0;
-    if (pb.idx >= pb.items.length) { stopPlayback(); return; }
-    return;
-  }
   if (pb.focusFor !== cur) {
     pb.focusFor = cur;
     pb.focus = focusJoints(cur.seq);
   }
-  const leading = tRel < lead;
-  const p = leading ? 0 : (tRel - lead) / dur;
-  const count = leading
-    ? 5 + Math.min(3, Math.floor(tRel / beat))
-    : 1 + Math.min(7, Math.floor(p * 8));
+  const rehearse = pb.mode === "rehearse";
+  const ph = rehearse ? pb.phase : "demo";
+  const nextPhase = (phase) => {
+    pb.phase = phase;
+    pb.tRel = 0;
+    pb.lastCount = 0;
+    pb.stepDone = 0;
+  };
 
-  // Anchor the ghost on the live body when one is visible (so it dances on the
-  // performer at their position and size), else fall back to a fixed spot.
+  // ---- phase / item transitions ----
+  if (ph === "demo" && pb.tRel >= lead + dur) {
+    if (rehearse) { nextPhase("turnLead"); return; }
+    pb.idx++;
+    pb.tRel = 0;
+    pb.lastCount = 0;
+    pb.stepDone = 0;
+    if (pb.idx >= pb.items.length) {
+      if (pbLoop) { pb.idx = 0; return; }
+      stopPlayback();
+      return;
+    }
+    return;
+  }
+  if (ph === "turnLead" && pb.tRel >= lead) {
+    nextPhase("turn");
+    pb.capture = []; // runFrame fills this with normalized poses
+    return;
+  }
+  if (ph === "turn" && pb.tRel >= dur + beat) {
+    pb.result = scoreRehearse(pb);
+    pb.capture = null;
+    if (pb.result.ok) { flashRiso(now); ping(); }
+    flashBigStatus(pb.result.big, pb.result.ok ? "" : "stop", 2000);
+    nextPhase("result");
+    return;
+  }
+  if (ph === "result" && pb.tRel >= 2300) { nextPhase("demo"); return; } // rehearse loops until stopped
+
+  // ---- timeline for this frame ----
+  let leading = false, p = 0, count = null, showGhost = true, ghostAlpha = 1;
+  if (ph === "demo") {
+    leading = pb.tRel < lead;
+    p = leading ? 0 : (pb.tRel - lead) / dur;
+    count = leading
+      ? 5 + Math.min(3, Math.floor(pb.tRel / beat))
+      : 1 + Math.min(7, Math.floor(p * 8));
+  } else if (ph === "turnLead") {
+    leading = true;
+    ghostAlpha = 0.3; // the start pose lingers faintly while you get set
+    count = 5 + Math.min(3, Math.floor(pb.tRel / beat));
+  } else if (ph === "turn") {
+    p = Math.min(1, pb.tRel / dur);
+    count = 1 + Math.min(7, Math.floor(Math.min(0.999, pb.tRel / dur) * 8));
+    showGhost = false; // from memory: only the counts carry you
+  } else {
+    showGhost = false; // result: the verdict is on screen
+  }
+
+  // Steps mode (plain playback only): freeze at the top of every count until
+  // the performer hits the pose, or Space skips.
+  if (!rehearse && pbSteps && !leading && count > pb.stepDone) {
+    pb.waiting = true;
+    pb.tRel = lead + (count - 1) * beat;
+    p = (pb.tRel - lead) / dur;
+  }
+
+  // Anchor the ghost on the live body when one is visible (so it dances on
+  // the performer at their position and size), else a fixed spot.
   const live = liveFrame && (now - liveFrame.at < 300);
   const ax = live ? liveFrame.cx : GHOST_CX;
   const ay = live ? liveFrame.cy : GHOST_CY;
   const asc = live ? liveFrame.torso : GHOST_SCALE;
 
-  // Onion-skin echoes: two slightly older positions in flat translucent red
-  // under the figure, so where the move came from stays readable.
-  if (!leading) {
-    for (const [back, alpha] of [[0.12, 0.1], [0.06, 0.2]]) {
-      if (p - back <= 0) continue;
-      const GPe = ghostPx(ghostFrameAt(cur, p - back, ax, ay, asc));
-      const sce = ghostTorso(GPe);
-      if (sce > 8) {
-        // Echoes are screened flat ink too, not clean vector shapes.
-        const ge = inkLayer();
-        ge.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
-        paintBody(ge, GPe, sce, "#E8452C");
-        screenInk(ge, 0.4, 0.55);
-        octx.save();
-        octx.globalAlpha = alpha;
-        octx.drawImage(inkCanvas, 0, 0);
-        octx.restore();
+  if (showGhost) {
+    // Onion-skin echoes (screened flat ink) under the moving figure.
+    if (!leading && !pb.waiting) {
+      for (const [back, alpha] of [[0.12, 0.1], [0.06, 0.2]]) {
+        if (p - back <= 0) continue;
+        const GPe = ghostPx(ghostFrameAt(cur, p - back, ax, ay, asc));
+        const sce = ghostTorso(GPe);
+        if (sce > 8) {
+          const ge = inkLayer();
+          ge.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+          paintBody(ge, GPe, sce, "#E8452C");
+          screenInk(ge, 0.4, 0.55);
+          octx.save();
+          octx.globalAlpha = alpha;
+          octx.drawImage(inkCanvas, 0, 0);
+          octx.restore();
+        }
       }
     }
-  }
-
-  // The ghost itself: the grainy riso print figure. Codes with no usable
-  // torso fall back to the readable white wireframe.
-  const ghost = ghostFrameAt(cur, p, ax, ay, asc);
-  const GP = ghostPx(ghost);
-  const gsc = ghostTorso(GP);
-  if (gsc > 8) {
-    paintRisoGhost(GP, gsc);
-    // Focus rings pulse on the joints that carry this move; during the
-    // count-in they sit on the start pose, telling you where to look.
-    const pulse = 1 + 0.15 * Math.sin(now / 130);
-    for (const j of pb.focus.joints) {
-      const q = GP(j);
-      if (!q.v) continue;
-      const r = Math.max(10, gsc * 0.22) * pulse;
-      octx.beginPath();
-      octx.arc(q.x, q.y, r, 0, Math.PI * 2);
-      octx.strokeStyle = "rgba(236,255,0,0.9)";
-      octx.lineWidth = 3;
-      octx.stroke();
-      octx.beginPath();
-      octx.arc(q.x, q.y, r * 1.35, 0, Math.PI * 2);
-      octx.strokeStyle = "rgba(236,255,0,0.35)";
-      octx.lineWidth = 2;
-      octx.stroke();
+    const ghost = ghostFrameAt(cur, p, ax, ay, asc);
+    const GP = ghostPx(ghost);
+    const gsc = ghostTorso(GP);
+    if (gsc > 8) {
+      if (ghostAlpha < 1) {
+        octx.save();
+        octx.globalAlpha = ghostAlpha;
+        paintBody(octx, GP, gsc, "#E8452C");
+        octx.restore();
+      } else {
+        paintRisoGhost(GP, gsc);
+      }
+      // Where each focus joint goes NEXT (dashed), then the rings with live
+      // feedback: filled solid when your joint is in place, hollow with a
+      // red guide arrow when it is not.
+      if (!leading && !pb.waiting && p < 0.999) drawPathHints(cur, p, ax, ay, asc, pb.focus.joints);
+      const targets = pbTargets(GP, gsc, pb.focus.joints, now);
+      const pulse = 1 + 0.15 * Math.sin(now / 130);
+      let ringCount = 0, onCount = 0;
+      for (const j of pb.focus.joints) {
+        const q = GP(j);
+        if (!q.v) continue;
+        ringCount++;
+        const t = targets.get(j);
+        if (t?.on) onCount++;
+        const r = Math.max(10, gsc * 0.22) * (t?.on ? 1 : pulse);
+        octx.beginPath();
+        octx.arc(q.x, q.y, r, 0, Math.PI * 2);
+        if (t?.on) {
+          octx.fillStyle = "rgba(236,255,0,0.3)";
+          octx.fill();
+          octx.lineWidth = 5;
+          octx.strokeStyle = "#ECFF00";
+          octx.stroke();
+        } else {
+          octx.lineWidth = 3;
+          octx.strokeStyle = "rgba(236,255,0,0.9)";
+          octx.stroke();
+          octx.beginPath();
+          octx.arc(q.x, q.y, r * 1.35, 0, Math.PI * 2);
+          octx.lineWidth = 2;
+          octx.strokeStyle = "rgba(236,255,0,0.35)";
+          octx.stroke();
+          if (t) drawGuideArrow(t, q, gsc);
+        }
+      }
+      // Steps: release the freeze when every visible focus joint is in place
+      // (and at least one live joint was actually seen), or on Space.
+      if (pb.waiting && (pb.skipStep || (ringCount > 0 && targets.size > 0 && onCount === ringCount))) {
+        pb.stepDone = count;
+        pb.waiting = false;
+        pb.skipStep = false;
+        countTick(false);
+      }
+    } else {
+      const conns = connectionsForFamily(cur.family || "blaze");
+      drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
+      drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
+      if (pb.waiting && pb.skipStep) { pb.stepDone = count; pb.waiting = false; pb.skipStep = false; }
     }
-  } else {
-    const conns = connectionsForFamily(cur.family || "blaze");
-    drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
-    drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
   }
 
-  // Counts: numeral + dot strip update only when the count changes.
-  if (pb.lastCount !== count || pb.lastLead !== leading) {
+  // Counts: numeral + dot strip, updated only when the count changes.
+  if (count == null) {
+    danceCount.hidden = true;
+    countDots.hidden = true;
+  } else if (pb.lastCount !== count || pb.lastLead !== leading) {
     pb.lastCount = count;
     pb.lastLead = leading;
     danceCount.hidden = false;
@@ -2246,10 +2489,20 @@ function drawPlayback(now) {
     countTick(!leading && (count === 1 || count === 5));
   }
 
-  statusEl.textContent =
-    `Playing “${pb.label}”` +
-    (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "") +
-    (pb.focus.label ? ` · watch the ${pb.focus.label}` : "");
+  // Status line per phase.
+  if (ph === "turnLead") {
+    statusEl.textContent = `Your turn: perform “${pb.label}” from memory after the count-in…`;
+  } else if (ph === "turn") {
+    statusEl.textContent = `Go! Perform “${pb.label}”.`;
+  } else if (ph === "result") {
+    statusEl.textContent = pb.result.msg;
+  } else {
+    statusEl.textContent =
+      (rehearse ? `Rehearsing “${pb.label}”: watch first` : `Playing “${pb.label}”`) +
+      (!rehearse && pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "") +
+      (pb.focus.label ? ` · watch the ${pb.focus.label}` : "") +
+      (pb.waiting ? " · hit the pose to continue (or press Space)" : "");
+  }
 }
 
 // ---------- Codes list ----------
@@ -2285,6 +2538,7 @@ function renderCodeList() {
     const famBadge = fams.map((f) => `<span class="fam fam-${f}">${FAM_LABEL[f] || f}</span>`).join("");
     const wordKey = "word:" + g.word.toLowerCase();
     const wordPlaying = playback && playback.key === wordKey;
+    const rehearsing = playback && playback.key === "rh:" + g.word.toLowerCase();
     const w = encodeURIComponent(g.word);
     const li = document.createElement("li");
     li.className = "code-item";
@@ -2299,6 +2553,7 @@ function renderCodeList() {
         </div>
         <div class="row-actions">
           <button class="btn small ${wordPlaying ? "playing" : ""}" data-act="play" data-word="${w}">${wordPlaying ? "Stop" : playAllLabel}</button>
+          <button class="btn small ${rehearsing ? "playing" : ""}" data-act="rehearse" data-word="${w}" title="Watch it, then perform it from memory and get scored">${rehearsing ? "Stop" : "Rehearse"}</button>
           <button class="btn small" data-act="rename" data-word="${w}">Rename</button>
           <button class="btn small danger" data-act="del" data-word="${w}">Delete</button>
         </div>
@@ -2379,6 +2634,9 @@ codeList.addEventListener("click", (e) => {
   if (act === "play") {
     if (playback && playback.key === "word:" + word.toLowerCase()) stopPlayback();
     else startPlayback(word);
+  } else if (act === "rehearse") {
+    if (playback && playback.key === "rh:" + word.toLowerCase()) stopPlayback();
+    else startRehearse(word);
   } else if (act === "play-ex") {
     if (playback && playback.key === "ex:" + id) stopPlayback();
     else startPlaybackExample(id);
@@ -2778,7 +3036,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v36 (2026-07-12)");
+  console.log("Queercoded build v37 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
