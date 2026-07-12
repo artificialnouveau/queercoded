@@ -578,8 +578,12 @@ function figPoint(frame, i, cx, cy, sc) {
 // seams: they chopped the body into disconnected lumps. When a recording has
 // no usable leg data, a neutral standing pair of legs is drawn anyway so the
 // figure always reads as a whole body.
-function paintFigure(ctx, frame, cx, cy, sc, s, color) {
-  const P = (i) => figPoint(frame, i, cx, cy, sc);
+// Generic riso body painter. `P(i)` returns a landmark in pixel space, `sc`
+// is the torso length in pixels; all part widths derive from it. Used by the
+// pose cards AND the live overlay so the whole app shares one body language.
+// opts.defaultLegs draws a standing pair when leg data is missing (cards
+// want a complete figure; the live overlay should not invent legs).
+function paintBody(ctx, P, sc, color, opts = {}) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.strokeStyle = color;
@@ -611,7 +615,7 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
   // (taught with the lower body out of frame) is drawn standing straight
   // down, splayed slightly outward so default legs never fuse into a column.
   const legLen = sc * 0.95;
-  const midHipX = lhP.v && rhP.v ? (lhP.x + rhP.x) / 2 : cx;
+  const midHipX = lhP.v && rhP.v ? (lhP.x + rhP.x) / 2 : (lhP.v ? lhP.x : rhP.x);
   for (const [hip, knee, ank, toeI] of [[23, 25, 27, 31], [24, 26, 28, 32]]) {
     const H = P(hip);
     if (!H.v) continue;
@@ -619,6 +623,7 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
     const degenerate = !K.v || !A.v ||
       Math.hypot(A.x - H.x, A.y - H.y) < sc * 0.6;
     if (degenerate) {
+      if (!opts.defaultLegs) continue; // the live overlay never invents legs
       const dir = H.x >= midHipX ? 1 : -1; // splay away from the midline
       K = { x: H.x + dir * sc * 0.1, y: H.y + legLen, v: true };
       A = { x: H.x + dir * sc * 0.18, y: H.y + legLen * 2, v: true };
@@ -666,6 +671,10 @@ function paintFigure(ctx, frame, cx, cy, sc, s, color) {
     limb(W, hand, sc * 0.18, sc * 0.22); // hand: a slight distal bulge
   }
 }
+// Card figure: paintBody over a stored normalized frame.
+function paintFigure(ctx, frame, cx, cy, sc, color) {
+  paintBody(ctx, (i) => figPoint(frame, i, cx, cy, sc), sc, color, { defaultLegs: true });
+}
 function drawFigureCell(ctx, frame, x0, s) {
   const cx = x0 + s * 0.5;
   const cy = s * 0.4;      // hips above centre so default legs fit below
@@ -674,9 +683,45 @@ function drawFigureCell(ctx, frame, x0, s) {
   // Yellow layer first (offset), then red on top: the riso registration look.
   ctx.save();
   ctx.translate(off, off * 0.7);
-  paintFigure(ctx, frame, cx, cy, sc, s, "#ECFF00");
+  paintFigure(ctx, frame, cx, cy, sc, "#ECFF00");
   ctx.restore();
-  paintFigure(ctx, frame, cx, cy, sc, s, "#FF002A");
+  paintFigure(ctx, frame, cx, cy, sc, "#FF002A");
+}
+
+// Live overlay: the tracked person wears the same riso body, translucent so
+// the video stays visible, sized by their on-screen torso so it is never
+// spindly up close or bloated far away. Bright caps on head and hands keep
+// the expressive points readable.
+function drawLiveBody(lms) {
+  const ls = lms[11], rs = lms[12], lh = lms[23], rh = lms[24];
+  if (!ls || !rs) return false;
+  const shx = ((ls.x + rs.x) / 2) * overlay.width;
+  const shy = ((ls.y + rs.y) / 2) * overlay.height;
+  const hx = (((lh?.x ?? ls.x) + (rh?.x ?? rs.x)) / 2) * overlay.width;
+  const hy = (((lh?.y ?? ls.y) + (rh?.y ?? rs.y)) / 2) * overlay.height;
+  const sc = Math.hypot(shx - hx, shy - hy);
+  if (!(sc > 8)) return false; // too small or degenerate: let the wireframe handle it
+  const P = (i) => {
+    const p = lms[i];
+    return p
+      ? { x: p.x * overlay.width, y: p.y * overlay.height, v: (p.visibility ?? 1) > 0.3 }
+      : { x: 0, y: 0, v: false };
+  };
+  paintBody(octx, P, sc, "rgba(236,255,0,0.35)");
+  octx.save();
+  octx.translate(-sc * 0.06, -sc * 0.04);
+  paintBody(octx, P, sc, "rgba(255,0,42,0.42)");
+  octx.restore();
+  // Bright marks where it matters: head and hands.
+  octx.fillStyle = "#ECFF00";
+  for (const i of [0, 15, 16]) {
+    const p = P(i);
+    if (!p.v) continue;
+    octx.beginPath();
+    octx.arc(p.x, p.y, Math.max(3, sc * 0.06), 0, Math.PI * 2);
+    octx.fill();
+  }
+  return true;
 }
 // A row of `count` evenly-spaced frames from a stored seq, as one canvas.
 function buildPoseStrip(seq, { count = 3, size = 96 } = {}) {
@@ -777,7 +822,11 @@ async function runFrame() {
     let lms = pickMainPose(poses);
     if (lms) lms = smoothPose(lms, now);
     if (lms) {
-      drawSkeleton(lms, backend.connections, "rgba(255,0,42,0.9)", "#ECFF00");
+      // The tracked person wears the riso body; the thin wireframe is only a
+      // fallback when the body is too small or degenerate to shape.
+      if (!drawLiveBody(lms)) {
+        drawSkeleton(lms, backend.connections, "rgba(255,0,42,0.9)", "#ECFF00");
+      }
 
       if (keyLandmarksVisible(lms)) {
         bodyVisible = true;
@@ -2407,7 +2456,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v24 (2026-07-11)");
+  console.log("Queercoded build v25 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
