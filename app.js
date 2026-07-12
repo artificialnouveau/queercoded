@@ -92,6 +92,9 @@ let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
+let lastTrackedAt = 0;        // last frame a body was tracked
+let outlineUntil = 0;         // the acquired-tracking outline flash fades until then
+const OUTLINE_FLASH_MS = 1600;
 let ghostPreviewTimer = null; // delayed post-save ghost replay
 // Latest live-body anchor {cx, cy, torso, at}, used to project the playback
 // ghost onto the performer instead of a fixed spot on screen.
@@ -341,9 +344,12 @@ function drawHandLabel(w, letter, active) {
   octx.restore();
 }
 function drawHandLabels(lms) {
-  const capturing = teach.state === "capturing";
-  drawHandLabel(lms[16], "R", !capturing); // subject's right hand: start
-  drawHandLabel(lms[15], "L", capturing);  // subject's left hand: stop and save
+  // Outside a teach (idle Teach tab) both letters show small and quiet, a
+  // reminder of which hand does what; during a teach the hand whose turn it
+  // is glows big and yellow.
+  const capturing = teach?.state === "capturing";
+  drawHandLabel(lms[16], "R", !!teach && !capturing); // subject's right hand: start
+  drawHandLabel(lms[15], "L", !!teach && capturing);  // subject's left hand: stop and save
 }
 
 // Per-landmark weights for matching. All 33 points equally weighted let the
@@ -700,12 +706,12 @@ function drawFigureCell(ctx, frame, x0, s) {
   paintFigure(ctx, frame, cx, cy, sc, "#FF002A");
 }
 
-// Live overlay: a soft white CONTOUR around the tracked body, no skeleton,
-// no fill, no color. It confirms tracking without covering or cartooning
-// the performer. Built by printing the full body shape on an offscreen
-// layer, then punching a slightly thinner body out of it, so only the
-// silhouette line remains, sized by the on-screen torso.
-function drawLiveBody(lms) {
+// Tracking-acquired flash: a soft white CONTOUR around the body, shown only
+// for a moment when the camera picks you up, then faded out so the video
+// stays clean. Built by printing the full body shape on an offscreen layer,
+// then punching a slightly thinner body out of it, so only the silhouette
+// line remains, sized by the on-screen torso.
+function drawLiveOutline(lms, alpha = 0.7) {
   const ls = lms[11], rs = lms[12], lh = lms[23], rh = lms[24];
   if (!ls || !rs) return false;
   const shx = ((ls.x + rs.x) / 2) * overlay.width;
@@ -728,7 +734,7 @@ function drawLiveBody(lms) {
   paintBody(g, P, sc, "#000000", { widthMul: 0.88 });
   g.restore();
   octx.save();
-  octx.globalAlpha = 0.7;
+  octx.globalAlpha = alpha;
   octx.drawImage(inkCanvas, 0, 0);
   octx.restore();
   return true;
@@ -1067,11 +1073,17 @@ async function runFrame() {
       if (ideMode) {
         // IDE look: the dancer is printed as source code, no outline needed.
         drawIdeBody(lms);
-      } else if (!drawLiveBody(lms)) {
-        // Outline look; the thin wireframe is only a fallback when the body
-        // is too small or degenerate to shape.
-        drawSkeleton(lms, backend.connections, "rgba(255,255,255,0.55)", "rgba(255,255,255,0.8)");
+      } else {
+        // No persistent overlay on the performer. Tracking feedback is a
+        // moment, not a costume: a soft outline flashes when the camera
+        // (re)acquires you after more than a second untracked, fades out,
+        // and leaves the video clean.
+        if (now - lastTrackedAt > 1200) outlineUntil = now + OUTLINE_FLASH_MS;
+        if (now < outlineUntil) {
+          drawLiveOutline(lms, 0.7 * Math.min(1, (outlineUntil - now) / OUTLINE_FLASH_MS));
+        }
       }
+      lastTrackedAt = now;
 
       if (keyLandmarksVisible(lms)) {
         bodyVisible = true;
@@ -1130,8 +1142,11 @@ async function runFrame() {
             statusEl.textContent = "Can't see your hands. Keep at least one hand in view; matching is paused.";
           }
         }
-        // Face target circle + R/L hand labels belong to Teach only.
+        // Face target circle + R/L hand labels belong to Teach only. The
+        // R/L letters also show on the idle Teach tab (small, quiet) so you
+        // see which hand starts and which stops BEFORE clicking Record.
         if (teach && !teach.manual && !playback) { drawRestTargets(); drawHandLabels(lms); }
+        else if (!teach && currentTab === "teach" && !playback) drawHandLabels(lms);
       }
 
       // Keep the matched word floating just above the head. The video is
@@ -2717,7 +2732,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v29 (2026-07-12)");
+  console.log("Queercoded build v30 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();

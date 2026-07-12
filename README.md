@@ -126,7 +126,8 @@ The URL is remembered in the browser. MoveNet and BlazePose need no setup.
 
 ### If it says "No clear movement captured"
 
-- Check the white outline is actually drawn around your body; if not, adjust
+- Check that an outline flashes around your body when you step into view
+  (tracking feedback); if it never does, adjust
   framing so at least your head and shoulders are clearly in view.
 - Make the movement bigger. Very small movements are treated as jitter.
 - Try BlazePose Full or Heavy; Lite (and Lightning) can lose fast limbs.
