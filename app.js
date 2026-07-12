@@ -583,7 +583,10 @@ function figPoint(frame, i, cx, cy, sc) {
 // pose cards AND the live overlay so the whole app shares one body language.
 // opts.defaultLegs draws a standing pair when leg data is missing (cards
 // want a complete figure; the live overlay should not invent legs).
+// opts.widthMul fattens every part without moving joints, so the same call
+// can paint a slightly larger underlay that reads as an inked outline.
 function paintBody(ctx, P, sc, color, opts = {}) {
+  const sw = sc * (opts.widthMul || 1); // widths only; lengths stay on sc
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.strokeStyle = color;
@@ -628,19 +631,19 @@ function paintBody(ctx, P, sc, color, opts = {}) {
       K = { x: H.x + dir * sc * 0.1, y: H.y + legLen, v: true };
       A = { x: H.x + dir * sc * 0.18, y: H.y + legLen * 2, v: true };
     }
-    limb(H, K, sc * 0.48, sc * 0.3);  // thigh
-    limb(K, A, sc * 0.3, sc * 0.2);   // calf
+    limb(H, K, sw * 0.48, sw * 0.3);  // thigh
+    limb(K, A, sw * 0.3, sw * 0.2);   // calf
     const T = P(toeI);
     const foot = !degenerate && T.v
       ? T
       : { x: A.x - sc * 0.3, y: A.y + sc * 0.1, v: true };
-    limb(A, foot, sc * 0.2, sc * 0.16);
+    limb(A, foot, sw * 0.2, sw * 0.16);
   }
   // Torso: filled quad softened with a thick round-jointed outline, so the
   // trunk has shoulders and hips instead of hard corners.
   const torso = [lsP, rsP, rhP, lhP].filter((p) => p.v);
   if (torso.length >= 3) {
-    ctx.lineWidth = sc * 0.3;
+    ctx.lineWidth = sw * 0.3;
     ctx.beginPath();
     ctx.moveTo(torso[0].x, torso[0].y);
     for (const p of torso.slice(1)) ctx.lineTo(p.x, p.y);
@@ -653,22 +656,22 @@ function paintBody(ctx, P, sc, color, opts = {}) {
   const hx = nose.v ? nose.x : (lsP.x + rsP.x) / 2;
   const hy = nose.v ? nose.y : (lsP.y + rsP.y) / 2 - sc * 0.55;
   if (lsP.v && rsP.v) {
-    limb({ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }, sc * 0.26, sc * 0.2);
+    limb({ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }, sw * 0.26, sw * 0.2);
   }
-  disc({ x: hx, y: hy }, sc * 0.29);
+  disc({ x: hx, y: hy }, sw * 0.29);
   // Arms on top (they carry the pose): tapered shoulder-elbow-wrist ending
   // in a small hand.
   for (const [sho, elb, wri, k1, k2] of [[11, 13, 15, 17, 19], [12, 14, 16, 18, 20]]) {
     const S = P(sho), E = P(elb), W = P(wri);
     if (!S.v || !E.v || !W.v) continue;
-    limb(S, E, sc * 0.36, sc * 0.26); // upper arm
-    limb(E, W, sc * 0.26, sc * 0.18); // forearm
+    limb(S, E, sw * 0.36, sw * 0.26); // upper arm
+    limb(E, W, sw * 0.26, sw * 0.18); // forearm
     const a = P(k1), b = P(k2);
     const n = (a.v ? 1 : 0) + (b.v ? 1 : 0);
     const hand = n
       ? { x: ((a.v ? a.x : 0) + (b.v ? b.x : 0)) / n, y: ((a.v ? a.y : 0) + (b.v ? b.y : 0)) / n }
       : { x: W.x + (W.x - E.x) * 0.22, y: W.y + (W.y - E.y) * 0.22 };
-    limb(W, hand, sc * 0.18, sc * 0.22); // hand: a slight distal bulge
+    limb(W, hand, sw * 0.18, sw * 0.22); // hand: a slight distal bulge
   }
 }
 // Card figure: paintBody over a stored normalized frame.
@@ -707,10 +710,14 @@ function drawLiveBody(lms) {
       ? { x: p.x * overlay.width, y: p.y * overlay.height, v: (p.visibility ?? 1) > 0.3 }
       : { x: 0, y: 0, v: false };
   };
-  paintBody(octx, P, sc, "rgba(236,255,0,0.35)");
+  // Ink outline first, then the two off-register ink layers: yellow under,
+  // red on top. The outline is what makes it read as a printed figure
+  // instead of a translucent wash.
+  paintBody(octx, P, sc, "rgba(15,10,6,0.35)", { widthMul: 1.22 });
+  paintBody(octx, P, sc, "rgba(236,255,0,0.4)");
   octx.save();
   octx.translate(-sc * 0.06, -sc * 0.04);
-  paintBody(octx, P, sc, "rgba(255,0,42,0.42)");
+  paintBody(octx, P, sc, "rgba(255,0,42,0.45)");
   octx.restore();
   // Bright marks where it matters: head and hands.
   octx.fillStyle = "#ECFF00";
@@ -1919,12 +1926,35 @@ function drawPlayback(now) {
     ghost.push({ x: ax + vx * asc, y: ay + vy * asc, visibility: filled ? 1 : 0 });
   }
 
-  // Draw with the bone set of the algorithm the code was taught on. A dark
-  // underlay plus thick strokes keeps the ghost readable over a busy video,
-  // and WHITE sets it clearly apart from the live red/yellow skeleton.
-  const conns = connectionsForFamily(cur.family || "blaze");
-  drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
-  drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
+  // The ghost wears the same riso body as everything else, printed in a
+  // different ink so it never gets confused with the live red/yellow body:
+  // a fat dark-ink outline pass, a misregistered riso-blue layer, then a
+  // paper-white body on top. Falls back to the wireframe when the stored
+  // code has no usable torso.
+  const GP = (i) => {
+    const p = ghost[i];
+    return p && p.visibility > 0
+      ? { x: p.x, y: p.y, v: true }
+      : { x: 0, y: 0, v: false };
+  };
+  const gls = GP(11), grs = GP(12), glh = GP(23), grh = GP(24);
+  const gsc = gls.v && grs.v && (glh.v || grh.v)
+    ? Math.hypot(
+        (gls.x + grs.x) / 2 - ((glh.v ? glh.x : grh.x) + (grh.v ? grh.x : glh.x)) / 2,
+        (gls.y + grs.y) / 2 - ((glh.v ? glh.y : grh.y) + (grh.v ? grh.y : glh.y)) / 2)
+    : 0;
+  if (gsc > 8) {
+    paintBody(octx, GP, gsc, "rgba(15,10,6,0.6)", { widthMul: 1.3 }); // ink outline
+    octx.save();
+    octx.translate(gsc * 0.08, gsc * 0.06);
+    paintBody(octx, GP, gsc, "rgba(0,120,191,0.8)");                  // riso blue, off-register
+    octx.restore();
+    paintBody(octx, GP, gsc, "rgba(255,250,240,0.95)");               // paper white on top
+  } else {
+    const conns = connectionsForFamily(cur.family || "blaze");
+    drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
+    drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
+  }
 
   statusEl.textContent =
     `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
@@ -2456,7 +2486,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v25 (2026-07-12)");
+  console.log("Queercoded build v26 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
