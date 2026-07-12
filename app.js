@@ -36,6 +36,12 @@ const bigWord = document.getElementById("bigWord");
 const countdownEl = document.getElementById("countdown");
 const bigStatus = document.getElementById("bigStatus");
 const modelSel = document.getElementById("modelSel");
+const ideCanvas = document.getElementById("ideCanvas");
+const ictx = ideCanvas.getContext("2d");
+const ideChrome = document.getElementById("ideChrome");
+const ideGutter = document.getElementById("ideGutter");
+const ideLnCol = document.getElementById("ideLnCol");
+const ideBtn = document.getElementById("ideBtn");
 
 const threshInput = document.getElementById("thresh");
 const threshVal = document.getElementById("threshVal");
@@ -495,6 +501,9 @@ async function initCamera() {
   await video.play();
   overlay.width = video.videoWidth;
   overlay.height = video.videoHeight;
+  ideCanvas.width = video.videoWidth;
+  ideCanvas.height = video.videoHeight;
+  buildIdeGrid();
 }
 
 // Of the detected people, return the most prominent one: the nearest, which
@@ -785,6 +794,176 @@ function paintRisoGhost(GP, sc) {
   octx.drawImage(inkCanvas, 0, 0);
   octx.restore();
 }
+
+// ---- IDE look ----
+// Opt-in visual mode: the room fades to editor-dark and the dancer is
+// rendered as syntax-highlighted source code (real lines from this app),
+// framed by editor chrome (tab bar, line-number gutter, status line). The
+// glyphs live on their own UNMIRRORED canvas so the code reads correctly;
+// all x coordinates are flipped instead.
+const IDE_KEY = "queercoded.ide.v1";
+let ideMode = false;
+const IDE_SRC = [
+  "const FIXED_LEN = 20; // frames per saved code",
+  "function normalizePose(lms) {",
+  "  const hip = mid(lms[23], lms[24]);",
+  "  const sho = mid(lms[11], lms[12]);",
+  "  const torso = Math.hypot(sho.x - hip.x, sho.y - hip.y) || 1e-6;",
+  "  return lms.map((p) => [(p.x - hip.x) / torso, (p.y - hip.y) / torso]);",
+  "}",
+  "// Dynamic Time Warping: tempo does not matter, shape does.",
+  "function dtw(a, b) {",
+  "  const n = a.length, m = b.length;",
+  "  const D = Array.from({ length: n + 1 }, () => []);",
+  "  for (let i = 1; i <= n; i++) {",
+  "    for (let j = 1; j <= m; j++) {",
+  "      const cost = poseDist(a[i - 1], b[j - 1]);",
+  "      D[i][j] = cost + Math.min(D[i - 1][j], D[i][j - 1], D[i - 1][j - 1]);",
+  "    }",
+  "  }",
+  "  return D[n][m] / (n + m);",
+  "}",
+  "let phrase = [];",
+  "function fireWord(word, dist) {",
+  "  phrase.push(word);",
+  "  speak(word); // move to speak",
+  "}",
+  "const body = 'queer' + 'coded';",
+];
+const IDE_COLORS = {
+  key: "#C586C0", num: "#B5CEA8", str: "#CE9178", com: "#6A9955",
+  fn: "#DCDCAA", id: "#9CDCFE", pun: "#8a8a8a", def: "#D4D4D4",
+};
+// Tiny highlighter: comment, string, keyword, number, call, identifier.
+const IDE_TOKEN = /(\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(const|let|var|function|return|for|while|if|else|new|of|in|null|true|false|Infinity|Math|Array)\b|(\d[\d.]*)|([A-Za-z_$][\w$]*(?=\s*\())|([A-Za-z_$][\w$]*)|(\s+)|(.)/gm;
+const ideLineCache = new Map();
+function ideSrcLine(idx) {
+  const key = idx % IDE_SRC.length;
+  if (ideLineCache.has(key)) return ideLineCache.get(key);
+  const text = IDE_SRC[key];
+  const colors = new Array(text.length).fill(IDE_COLORS.def);
+  IDE_TOKEN.lastIndex = 0;
+  let m;
+  while ((m = IDE_TOKEN.exec(text))) {
+    const color = m[1] ? IDE_COLORS.com : m[2] ? IDE_COLORS.str : m[3] ? IDE_COLORS.key
+      : m[4] ? IDE_COLORS.num : m[5] ? IDE_COLORS.fn : m[6] ? IDE_COLORS.id
+      : m[8] ? IDE_COLORS.pun : IDE_COLORS.def;
+    for (let i = m.index; i < m.index + m[0].length; i++) colors[i] = color;
+  }
+  const out = { text, colors };
+  ideLineCache.set(key, out);
+  return out;
+}
+// One grid row: the source line repeated across the width (with a small gap)
+// so the body silhouette never has line-length holes in it.
+function ideRow(row, cols) {
+  const src = ideSrcLine(row);
+  const span = src.text.length + 2;
+  const chars = new Array(cols), colors = new Array(cols);
+  for (let c = 0; c < cols; c++) {
+    const i = c % span;
+    chars[c] = i < src.text.length ? src.text[i] : " ";
+    colors[c] = i < src.text.length ? src.colors[i] : IDE_COLORS.def;
+  }
+  return { chars, colors };
+}
+let ideGrid = null;
+const ideMaskCanvas = document.createElement("canvas");
+const ideMaskCtx = ideMaskCanvas.getContext("2d", { willReadFrequently: true });
+const ideVidCanvas = document.createElement("canvas");
+const ideVidCtx = ideVidCanvas.getContext("2d", { willReadFrequently: true });
+function buildIdeGrid() {
+  const W = ideCanvas.width, H = ideCanvas.height;
+  if (!W || !H) { ideGrid = null; return; }
+  const cellH = Math.max(9, Math.round(H / 52)); // ~52 code lines tall
+  const cellW = Math.max(5, Math.round(cellH * 0.62));
+  const cols = Math.ceil(W / cellW), rows = Math.ceil(H / cellH);
+  ideMaskCanvas.width = ideVidCanvas.width = cols;
+  ideMaskCanvas.height = ideVidCanvas.height = rows;
+  const chars = [], colors = [];
+  for (let r = 0; r < rows; r++) {
+    const row = ideRow(r, cols);
+    chars.push(row.chars);
+    colors.push(row.colors);
+  }
+  ideGrid = {
+    cols, rows, cellW, cellH, chars, colors,
+    font: `${cellH}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`,
+  };
+  // Gutter numbers at the on-screen line height (approximate: the canvas is
+  // object-fit cover, so this is cosmetic alignment, not exact).
+  const lineCss = cellH * ((videoWrap.clientHeight || H) / H);
+  ideGutter.style.setProperty("--ide-line", lineCss.toFixed(2) + "px");
+  ideGutter.textContent = Array.from({ length: rows }, (_, i) => i + 1).join("\n");
+}
+// The dancer as code: the body silhouette (paintBody, downsampled to the
+// glyph grid) picks WHICH cells print, the video's brightness at each cell
+// sets how strongly, and the source text supplies character and color.
+function drawIdeBody(lms) {
+  if (!ideGrid) buildIdeGrid();
+  if (!ideGrid) return;
+  const { cols, rows, cellW, cellH, chars, colors } = ideGrid;
+  const W = ideCanvas.width, H = ideCanvas.height;
+  const P = (i) => {
+    const p = lms[i];
+    return p
+      ? { x: (1 - p.x) * W, y: p.y * H, v: (p.visibility ?? 1) > 0.3 }
+      : { x: 0, y: 0, v: false };
+  };
+  const ls = P(11), rs = P(12), lh = P(23), rh = P(24);
+  if (!ls.v || !rs.v || (!lh.v && !rh.v)) return;
+  const hipX = lh.v && rh.v ? (lh.x + rh.x) / 2 : (lh.v ? lh.x : rh.x);
+  const hipY = lh.v && rh.v ? (lh.y + rh.y) / 2 : (lh.v ? lh.y : rh.y);
+  const sc = Math.hypot((ls.x + rs.x) / 2 - hipX, (ls.y + rs.y) / 2 - hipY);
+  if (!(sc > 8)) return;
+  ideMaskCtx.clearRect(0, 0, cols, rows);
+  ideMaskCtx.save();
+  ideMaskCtx.scale(cols / W, rows / H);
+  paintBody(ideMaskCtx, P, sc, "#fff", { widthMul: 1.2 });
+  ideMaskCtx.restore();
+  const mask = ideMaskCtx.getImageData(0, 0, cols, rows).data;
+  ideVidCtx.save();
+  ideVidCtx.translate(cols, 0);
+  ideVidCtx.scale(-1, 1); // sample the video pre-flipped to match this canvas
+  ideVidCtx.drawImage(video, 0, 0, cols, rows);
+  ideVidCtx.restore();
+  const vid = ideVidCtx.getImageData(0, 0, cols, rows).data;
+  ictx.font = ideGrid.font;
+  ictx.textBaseline = "top";
+  for (let r = 0; r < rows; r++) {
+    const chRow = chars[r], coRow = colors[r];
+    for (let c = 0; c < cols; c++) {
+      const k = (r * cols + c) * 4;
+      if (mask[k + 3] < 40) continue;
+      const ch = chRow[c];
+      if (ch === " ") continue;
+      const lum = (vid[k] * 0.3 + vid[k + 1] * 0.59 + vid[k + 2] * 0.11) / 255;
+      ictx.globalAlpha = 0.4 + 0.6 * Math.min(1, lum * 1.7);
+      ictx.fillStyle = coRow[c];
+      ictx.fillText(ch, c * cellW, r * cellH);
+    }
+  }
+  ictx.globalAlpha = 1;
+  // The status line's cursor follows a wrist, like a caret chasing the dance.
+  const wr = (lms[16]?.visibility ?? 0) > 0.3 ? lms[16] : lms[15];
+  if (wr) {
+    ideLnCol.textContent =
+      `Ln ${Math.max(1, Math.round(wr.y * rows) + 1)}, Col ${Math.max(1, Math.round((1 - wr.x) * cols) + 1)}`;
+  }
+}
+function setIde(on) {
+  ideMode = on;
+  localStorage.setItem(IDE_KEY, on ? "1" : "0");
+  videoWrap.classList.toggle("ide", on);
+  ideCanvas.hidden = !on;
+  ideChrome.hidden = !on;
+  ideBtn.textContent = on ? "IDE look: on" : "IDE look: off";
+  if (!on && ideCanvas.width) ictx.clearRect(0, 0, ideCanvas.width, ideCanvas.height);
+  if (on) buildIdeGrid();
+}
+ideBtn.addEventListener("click", () => setIde(!ideMode));
+setIde(localStorage.getItem(IDE_KEY) === "1");
+
 // A row of `count` evenly-spaced frames from a stored seq, as one canvas.
 function buildPoseStrip(seq, { count = 3, size = 96 } = {}) {
   const canvas = document.createElement("canvas");
@@ -879,14 +1058,18 @@ async function runFrame() {
     try { poses = await backend.detect(video, now); }
     catch (e) { console.warn("detect failed:", e); }
     octx.clearRect(0, 0, overlay.width, overlay.height);
+    if (ideMode && ideCanvas.width) ictx.clearRect(0, 0, ideCanvas.width, ideCanvas.height);
 
     let bodyVisible = false;
     let lms = pickMainPose(poses);
     if (lms) lms = smoothPose(lms, now);
     if (lms) {
-      // The tracked person wears the riso body; the thin wireframe is only a
-      // fallback when the body is too small or degenerate to shape.
-      if (!drawLiveBody(lms)) {
+      if (ideMode) {
+        // IDE look: the dancer is printed as source code, no outline needed.
+        drawIdeBody(lms);
+      } else if (!drawLiveBody(lms)) {
+        // Outline look; the thin wireframe is only a fallback when the body
+        // is too small or degenerate to shape.
         drawSkeleton(lms, backend.connections, "rgba(255,255,255,0.55)", "rgba(255,255,255,0.8)");
       }
 
@@ -2534,7 +2717,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v28 (2026-07-12)");
+  console.log("Queercoded build v29 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();

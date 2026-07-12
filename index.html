@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Queercoded: move to speak</title>
-  <link rel="stylesheet" href="style.css?v=28" />
+  <link rel="stylesheet" href="style.css?v=29" />
 </head>
 <body>
   <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
@@ -54,6 +54,14 @@
         <video id="video" playsinline muted></video>
         <div id="grain" class="grain" aria-hidden="true"></div>
         <canvas id="overlay"></canvas>
+        <!-- IDE look: the dancer rendered as syntax-highlighted source code.
+             Its own UNMIRRORED canvas, so the glyphs stay readable. -->
+        <canvas id="ideCanvas" hidden></canvas>
+        <div id="ideChrome" class="ide-chrome" hidden aria-hidden="true">
+          <div class="ide-tabs"><span class="ide-tab active">dancer.js &#9679;</span><span class="ide-tab">queercoded.js</span><span class="ide-tab">README.md</span></div>
+          <div class="ide-gutter" id="ideGutter"></div>
+          <div class="ide-statusline"><span>main*</span><span id="ideLnCol">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span>JavaScript</span></div>
+        </div>
         <div id="bigWord" class="big-word" aria-live="polite"></div>
         <div id="bigStatus" class="big-status" aria-live="assertive"></div>
         <div id="closestHint" class="closest-hint" hidden></div>
@@ -82,6 +90,7 @@
             <option value="yolo">YOLO-Pose (needs a model file)</option>
           </optgroup>
         </select>
+        <button id="ideBtn" class="btn ghost small" title="Render the dancer as live source code in a code editor">IDE look: off</button>
       </div>
     </section>
 
@@ -212,6 +221,6 @@
     </aside>
   </main>
 
-  <script type="module" src="app.js?v=28"></script>
+  <script type="module" src="app.js?v=29"></script>
 </body>
 </html>
