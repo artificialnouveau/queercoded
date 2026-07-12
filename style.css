@@ -109,9 +109,9 @@ body {
   position: relative;
   width: auto;
   max-width: 100%;
-  height: min(calc(100vh - 280px), calc((100vw - 380px) * 0.75));
+  height: min(calc(100vh - 280px), calc((100vw - 380px) * 0.5625));
   min-height: 240px;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 16 / 9;
   margin: 0 auto;
   background: #000;
   border-radius: var(--radius);

@@ -498,7 +498,9 @@ async function switchAlgo(key) {
 
 async function initCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 640, height: 480, facingMode: "user" },
+    // Widescreen: more horizontal room for arms and travel. Cameras that
+    // cannot do 16:9 return their closest mode and the box crops to fit.
+    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
     audio: false,
   });
   video.srcObject = stream;
@@ -3036,7 +3038,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v37 (2026-07-13)");
+  console.log("Queercoded build v38 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
