@@ -827,30 +827,85 @@ function grainPat(ctx) {
   grainPattern = ctx.createPattern(t, "repeat");
   return grainPattern;
 }
-// Paints one grainy riso figure onto `octx`. `GP(i)` returns pixel-space
-// points, `sc` is the torso length in pixels.
+// A 45-degree halftone dot screen, generated once and tiled. Punched out of
+// the ink with destination-out it gives every layer the dotted tooth of a
+// screened print.
+let halftonePattern = null;
+function halftonePat(ctx) {
+  if (halftonePattern) return halftonePattern;
+  const t = document.createElement("canvas");
+  t.width = t.height = 96;
+  const g = t.getContext("2d");
+  g.fillStyle = "#000";
+  const cell = 6;
+  for (let y = 0, row = 0; y <= 96 + cell; y += cell, row++) {
+    for (let x = (row % 2) * (cell / 2); x <= 96 + cell; x += cell) {
+      g.beginPath();
+      g.arc(x, y, 1.7, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  halftonePattern = ctx.createPattern(t, "repeat");
+  return halftonePattern;
+}
+// Screens whatever ink is on the layer: halftone dots plus two offset grain
+// passes, so texture never tiles visibly and edges crumble a little.
+function screenInk(g, dots, grain) {
+  g.save();
+  g.globalCompositeOperation = "destination-out";
+  g.fillStyle = halftonePat(g);
+  g.globalAlpha = dots;
+  g.fillRect(0, 0, inkCanvas.width, inkCanvas.height);
+  g.fillStyle = grainPat(g);
+  g.globalAlpha = grain;
+  g.fillRect(0, 0, inkCanvas.width, inkCanvas.height);
+  g.translate(73, 41);
+  g.globalAlpha = grain * 0.55;
+  g.fillRect(-73, -41, inkCanvas.width, inkCanvas.height);
+  g.restore();
+}
+// Paints one gouache/riso figure onto `octx`. `GP(i)` returns pixel-space
+// points, `sc` is the torso length in pixels. Everything is FLAT ink: no
+// gradients, no lighting. Depth comes from three layered shapes (yellow
+// halo, red body, deep crimson overprint inside the form) and from the
+// halftone/grain texture eaten out of each layer; jittered double-stamps
+// make the silhouette edges wobble like a hand-pulled print instead of a
+// clean vector line.
 function paintRisoGhost(GP, sc) {
-  // Pale yellow halo behind, slightly fatter and printed off-register.
-  octx.save();
-  octx.translate(sc * 0.11, sc * 0.07);
-  paintBody(octx, GP, sc, "rgba(255,233,90,0.85)", { widthMul: 1.14 });
-  octx.restore();
-  // Red ink pass on its own layer, then erode it with grain.
   const g = inkLayer();
+  // Layer 1: pale yellow halo, off-register, edges roughened by the screen.
+  g.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+  g.save();
+  g.translate(sc * 0.11, sc * 0.07);
+  paintBody(g, GP, sc, "#FFE95A", { widthMul: 1.14 });
+  g.translate(sc * 0.025, -sc * 0.02); // jitter stamp: wobbly edge
+  g.globalAlpha = 0.5;
+  paintBody(g, GP, sc, "#FFE95A", { widthMul: 1.12 });
+  g.restore();
+  screenInk(g, 0.3, 0.4);
+  octx.save();
+  octx.globalAlpha = 0.85;
+  octx.drawImage(inkCanvas, 0, 0);
+  octx.restore();
+  // Layer 2: the red body, double-stamped with a slight offset so the
+  // contour is rough, then screened hard.
   g.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
   paintBody(g, GP, sc, "#E8452C");
   g.save();
-  g.globalCompositeOperation = "destination-out";
-  g.fillStyle = grainPat(g);
-  g.globalAlpha = 0.6;
-  g.fillRect(0, 0, inkCanvas.width, inkCanvas.height);
-  // A second, offset grain pass roughens the texture so it does not tile.
-  g.translate(73, 41);
-  g.globalAlpha = 0.35;
-  g.fillRect(-73, -41, inkCanvas.width, inkCanvas.height);
+  g.globalAlpha = 0.55;
+  g.translate(sc * 0.02, -sc * 0.015);
+  paintBody(g, GP, sc, "#E8452C", { widthMul: 1.04 });
   g.restore();
+  // Layer 3: a deep crimson overprint INSIDE the form, a thinner flat shape
+  // offset toward one side. This is all the shading a riso pass gets.
+  g.save();
+  g.globalAlpha = 0.55;
+  g.translate(-sc * 0.035, sc * 0.03);
+  paintBody(g, GP, sc, "#A8172E", { widthMul: 0.68 });
+  g.restore();
+  screenInk(g, 0.38, 0.5);
   octx.save();
-  octx.globalAlpha = 0.92;
+  octx.globalAlpha = 0.94;
   octx.drawImage(inkCanvas, 0, 0);
   octx.restore();
 }
@@ -2311,9 +2366,14 @@ function drawPlayback(now) {
       const GPe = ghostPx(ghostFrameAt(cur, p - back, ax, ay, asc));
       const sce = ghostTorso(GPe);
       if (sce > 8) {
+        // Echoes are screened flat ink too, not clean vector shapes.
+        const ge = inkLayer();
+        ge.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+        paintBody(ge, GPe, sce, "#E8452C");
+        screenInk(ge, 0.4, 0.55);
         octx.save();
         octx.globalAlpha = alpha;
-        paintBody(octx, GPe, sce, "#FF002A");
+        octx.drawImage(inkCanvas, 0, 0);
         octx.restore();
       }
     }
@@ -2900,7 +2960,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v34 (2026-07-12)");
+  console.log("Queercoded build v35 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
