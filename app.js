@@ -583,7 +583,10 @@ function figPoint(frame, i, cx, cy, sc) {
 // pose cards AND the live overlay so the whole app shares one body language.
 // opts.defaultLegs draws a standing pair when leg data is missing (cards
 // want a complete figure; the live overlay should not invent legs).
+// opts.widthMul fattens every part without moving the joints, so the same
+// pose can also be printed as a slightly larger halo layer behind the body.
 function paintBody(ctx, P, sc, color, opts = {}) {
+  const sw = sc * (opts.widthMul || 1); // widths only; lengths stay on sc
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.strokeStyle = color;
@@ -628,19 +631,19 @@ function paintBody(ctx, P, sc, color, opts = {}) {
       K = { x: H.x + dir * sc * 0.1, y: H.y + legLen, v: true };
       A = { x: H.x + dir * sc * 0.18, y: H.y + legLen * 2, v: true };
     }
-    limb(H, K, sc * 0.48, sc * 0.3);  // thigh
-    limb(K, A, sc * 0.3, sc * 0.2);   // calf
+    limb(H, K, sw * 0.48, sw * 0.3);  // thigh
+    limb(K, A, sw * 0.3, sw * 0.2);   // calf
     const T = P(toeI);
     const foot = !degenerate && T.v
       ? T
       : { x: A.x - sc * 0.3, y: A.y + sc * 0.1, v: true };
-    limb(A, foot, sc * 0.2, sc * 0.16);
+    limb(A, foot, sw * 0.2, sw * 0.16);
   }
   // Torso: filled quad softened with a thick round-jointed outline, so the
   // trunk has shoulders and hips instead of hard corners.
   const torso = [lsP, rsP, rhP, lhP].filter((p) => p.v);
   if (torso.length >= 3) {
-    ctx.lineWidth = sc * 0.3;
+    ctx.lineWidth = sw * 0.3;
     ctx.beginPath();
     ctx.moveTo(torso[0].x, torso[0].y);
     for (const p of torso.slice(1)) ctx.lineTo(p.x, p.y);
@@ -653,22 +656,22 @@ function paintBody(ctx, P, sc, color, opts = {}) {
   const hx = nose.v ? nose.x : (lsP.x + rsP.x) / 2;
   const hy = nose.v ? nose.y : (lsP.y + rsP.y) / 2 - sc * 0.55;
   if (lsP.v && rsP.v) {
-    limb({ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }, sc * 0.26, sc * 0.2);
+    limb({ x: (lsP.x + rsP.x) / 2, y: (lsP.y + rsP.y) / 2 }, { x: hx, y: hy }, sw * 0.26, sw * 0.2);
   }
-  disc({ x: hx, y: hy }, sc * 0.29);
+  disc({ x: hx, y: hy }, sw * 0.29);
   // Arms on top (they carry the pose): tapered shoulder-elbow-wrist ending
   // in a small hand.
   for (const [sho, elb, wri, k1, k2] of [[11, 13, 15, 17, 19], [12, 14, 16, 18, 20]]) {
     const S = P(sho), E = P(elb), W = P(wri);
     if (!S.v || !E.v || !W.v) continue;
-    limb(S, E, sc * 0.36, sc * 0.26); // upper arm
-    limb(E, W, sc * 0.26, sc * 0.18); // forearm
+    limb(S, E, sw * 0.36, sw * 0.26); // upper arm
+    limb(E, W, sw * 0.26, sw * 0.18); // forearm
     const a = P(k1), b = P(k2);
     const n = (a.v ? 1 : 0) + (b.v ? 1 : 0);
     const hand = n
       ? { x: ((a.v ? a.x : 0) + (b.v ? b.x : 0)) / n, y: ((a.v ? a.y : 0) + (b.v ? b.y : 0)) / n }
       : { x: W.x + (W.x - E.x) * 0.22, y: W.y + (W.y - E.y) * 0.22 };
-    limb(W, hand, sc * 0.18, sc * 0.22); // hand: a slight distal bulge
+    limb(W, hand, sw * 0.18, sw * 0.22); // hand: a slight distal bulge
   }
 }
 // Card figure: paintBody over a stored normalized frame.
@@ -722,6 +725,67 @@ function drawLiveBody(lms) {
     octx.fill();
   }
   return true;
+}
+
+// ---- Riso print ghost ----
+// The playback ghost is printed like the reference riso figures: a solid
+// warm-red body with screenprint grain punched out of the ink, over a pale
+// yellow halo that sits slightly off-register. The red body is built on an
+// offscreen layer so the grain only erodes the ink, never the video below.
+let inkCanvas = null, inkCtx = null, grainPattern = null;
+function inkLayer() {
+  if (!inkCanvas) {
+    inkCanvas = document.createElement("canvas");
+    inkCtx = inkCanvas.getContext("2d");
+  }
+  if (inkCanvas.width !== overlay.width || inkCanvas.height !== overlay.height) {
+    inkCanvas.width = overlay.width;
+    inkCanvas.height = overlay.height;
+  }
+  return inkCtx;
+}
+// A tiling noise texture, generated once. Used with destination-out so the
+// ink gets the stippled, unevenly-soaked texture of a risograph pass.
+function grainPat(ctx) {
+  if (grainPattern) return grainPattern;
+  const t = document.createElement("canvas");
+  t.width = t.height = 160;
+  const g = t.getContext("2d");
+  const img = g.createImageData(160, 160);
+  for (let i = 3; i < img.data.length; i += 4) {
+    const r = Math.random();
+    img.data[i] = r < 0.55 ? 0 : Math.floor((r - 0.55) / 0.45 * 235);
+  }
+  g.putImageData(img, 0, 0);
+  grainPattern = ctx.createPattern(t, "repeat");
+  return grainPattern;
+}
+// Paints one grainy riso figure onto `octx`. `GP(i)` returns pixel-space
+// points, `sc` is the torso length in pixels.
+function paintRisoGhost(GP, sc) {
+  // Pale yellow halo behind, slightly fatter and printed off-register.
+  octx.save();
+  octx.translate(sc * 0.11, sc * 0.07);
+  paintBody(octx, GP, sc, "rgba(255,233,90,0.85)", { widthMul: 1.14 });
+  octx.restore();
+  // Red ink pass on its own layer, then erode it with grain.
+  const g = inkLayer();
+  g.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+  paintBody(g, GP, sc, "#E8452C");
+  g.save();
+  g.globalCompositeOperation = "destination-out";
+  g.fillStyle = grainPat(g);
+  g.globalAlpha = 0.6;
+  g.fillRect(0, 0, inkCanvas.width, inkCanvas.height);
+  // A second, offset grain pass roughens the texture so it does not tile.
+  g.translate(73, 41);
+  g.globalAlpha = 0.35;
+  g.fillRect(-73, -41, inkCanvas.width, inkCanvas.height);
+  g.restore();
+  octx.save();
+  octx.globalAlpha = 0.92;
+  octx.drawImage(inkCanvas, 0, 0);
+  octx.restore();
 }
 // A row of `count` evenly-spaced frames from a stored seq, as one canvas.
 function buildPoseStrip(seq, { count = 3, size = 96 } = {}) {
@@ -1919,12 +1983,28 @@ function drawPlayback(now) {
     ghost.push({ x: ax + vx * asc, y: ay + vy * asc, visibility: filled ? 1 : 0 });
   }
 
-  // Draw with the bone set of the algorithm the code was taught on. A dark
-  // underlay plus thick strokes keeps the ghost readable over a busy video,
-  // and WHITE sets it clearly apart from the live red/yellow skeleton.
-  const conns = connectionsForFamily(cur.family || "blaze");
-  drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
-  drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
+  // The ghost is printed as a riso figure (grainy red ink over a yellow
+  // halo), same visual language as the pose cards but full-size and moving.
+  // Codes with no usable torso fall back to the readable white wireframe.
+  const GP = (i) => {
+    const p = ghost[i];
+    return p && p.visibility > 0
+      ? { x: p.x, y: p.y, v: true }
+      : { x: 0, y: 0, v: false };
+  };
+  const gls = GP(11), grs = GP(12), glh = GP(23), grh = GP(24);
+  const hipX = glh.v && grh.v ? (glh.x + grh.x) / 2 : (glh.v ? glh.x : grh.x);
+  const hipY = glh.v && grh.v ? (glh.y + grh.y) / 2 : (glh.v ? glh.y : grh.y);
+  const gsc = gls.v && grs.v && (glh.v || grh.v)
+    ? Math.hypot((gls.x + grs.x) / 2 - hipX, (gls.y + grs.y) / 2 - hipY)
+    : 0;
+  if (gsc > 8) {
+    paintRisoGhost(GP, gsc);
+  } else {
+    const conns = connectionsForFamily(cur.family || "blaze");
+    drawSkeleton(ghost, conns, "rgba(0,0,0,0.55)", "rgba(0,0,0,0.55)", 11, 7);
+    drawSkeleton(ghost, conns, "rgba(255,255,255,0.95)", "#ffffff", 5, 4);
+  }
 
   statusEl.textContent =
     `Playing “${pb.label}”` + (pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "");
@@ -2456,7 +2536,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v25 (2026-07-12)");
+  console.log("Queercoded build v27 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
