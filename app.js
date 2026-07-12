@@ -691,10 +691,11 @@ function drawFigureCell(ctx, frame, x0, s) {
   paintFigure(ctx, frame, cx, cy, sc, "#FF002A");
 }
 
-// Live overlay: the tracked person wears the same riso body, translucent so
-// the video stays visible, sized by their on-screen torso so it is never
-// spindly up close or bloated far away. Bright caps on head and hands keep
-// the expressive points readable.
+// Live overlay: a soft white CONTOUR around the tracked body, no skeleton,
+// no fill, no color. It confirms tracking without covering or cartooning
+// the performer. Built by printing the full body shape on an offscreen
+// layer, then punching a slightly thinner body out of it, so only the
+// silhouette line remains, sized by the on-screen torso.
 function drawLiveBody(lms) {
   const ls = lms[11], rs = lms[12], lh = lms[23], rh = lms[24];
   if (!ls || !rs) return false;
@@ -710,20 +711,17 @@ function drawLiveBody(lms) {
       ? { x: p.x * overlay.width, y: p.y * overlay.height, v: (p.visibility ?? 1) > 0.3 }
       : { x: 0, y: 0, v: false };
   };
-  paintBody(octx, P, sc, "rgba(236,255,0,0.35)");
+  const g = inkLayer();
+  g.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+  paintBody(g, P, sc, "#ffffff", { widthMul: 1.05 });
+  g.save();
+  g.globalCompositeOperation = "destination-out";
+  paintBody(g, P, sc, "#000000", { widthMul: 0.88 });
+  g.restore();
   octx.save();
-  octx.translate(-sc * 0.06, -sc * 0.04);
-  paintBody(octx, P, sc, "rgba(255,0,42,0.42)");
+  octx.globalAlpha = 0.7;
+  octx.drawImage(inkCanvas, 0, 0);
   octx.restore();
-  // Bright marks where it matters: head and hands.
-  octx.fillStyle = "#ECFF00";
-  for (const i of [0, 15, 16]) {
-    const p = P(i);
-    if (!p.v) continue;
-    octx.beginPath();
-    octx.arc(p.x, p.y, Math.max(3, sc * 0.06), 0, Math.PI * 2);
-    octx.fill();
-  }
   return true;
 }
 
@@ -889,7 +887,7 @@ async function runFrame() {
       // The tracked person wears the riso body; the thin wireframe is only a
       // fallback when the body is too small or degenerate to shape.
       if (!drawLiveBody(lms)) {
-        drawSkeleton(lms, backend.connections, "rgba(255,0,42,0.9)", "#ECFF00");
+        drawSkeleton(lms, backend.connections, "rgba(255,255,255,0.55)", "rgba(255,255,255,0.8)");
       }
 
       if (keyLandmarksVisible(lms)) {
@@ -2536,7 +2534,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v27 (2026-07-12)");
+  console.log("Queercoded build v28 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
