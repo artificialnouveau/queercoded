@@ -92,9 +92,6 @@ let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
 let playback = null;          // {word, items, idx, t0} ghost playback of a saved code
-let lastTrackedAt = 0;        // last frame a body was tracked
-let outlineUntil = 0;         // the acquired-tracking outline flash fades until then
-const OUTLINE_FLASH_MS = 1600;
 let ghostPreviewTimer = null; // delayed post-save ghost replay
 // Latest live-body anchor {cx, cy, torso, at}, used to project the playback
 // ghost onto the performer instead of a fixed spot on screen.
@@ -706,38 +703,93 @@ function drawFigureCell(ctx, frame, x0, s) {
   paintFigure(ctx, frame, cx, cy, sc, "#FF002A");
 }
 
-// Tracking-acquired flash: a soft white CONTOUR around the body, shown only
-// for a moment when the camera picks you up, then faded out so the video
-// stays clean. Built by printing the full body shape on an offscreen layer,
-// then punching a slightly thinner body out of it, so only the silhouette
-// line remains, sized by the on-screen torso.
-function drawLiveOutline(lms, alpha = 0.7) {
-  const ls = lms[11], rs = lms[12], lh = lms[23], rh = lms[24];
-  if (!ls || !rs) return false;
-  const shx = ((ls.x + rs.x) / 2) * overlay.width;
-  const shy = ((ls.y + rs.y) / 2) * overlay.height;
-  const hx = (((lh?.x ?? ls.x) + (rh?.x ?? rs.x)) / 2) * overlay.width;
-  const hy = (((lh?.y ?? ls.y) + (rh?.y ?? rs.y)) / 2) * overlay.height;
-  const sc = Math.hypot(shx - hx, shy - hy);
-  if (!(sc > 8)) return false; // too small or degenerate: let the wireframe handle it
-  const P = (i) => {
-    const p = lms[i];
-    return p
-      ? { x: p.x * overlay.width, y: p.y * overlay.height, v: (p.visibility ?? 1) > 0.3 }
-      : { x: 0, y: 0, v: false };
-  };
-  const g = inkLayer();
-  g.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
-  paintBody(g, P, sc, "#ffffff", { widthMul: 1.05 });
-  g.save();
-  g.globalCompositeOperation = "destination-out";
-  paintBody(g, P, sc, "#000000", { widthMul: 0.88 });
-  g.restore();
+// ---- Creative live presence: constellation + light trails ----
+// No bones, no outline, nothing worn ON the performer. The tracked body is
+// a constellation of soft glowing ink dots (left side yellow, right side
+// red, head white) and the expressive points (head, hands, ankles) leave
+// comet trails that fade in about a second: the feedback-trail language of
+// TouchDesigner dance pieces, drawn additively so movement paints light.
+const TRAIL_MS = 900;
+const TRAIL_DEFS = [
+  { i: 0,  rgb: "255,255,255" },
+  { i: 15, rgb: "236,255,0" }, { i: 16, rgb: "255,0,42" },  // wrists
+  { i: 27, rgb: "236,255,0" }, { i: 28, rgb: "255,0,42" },  // ankles
+];
+const ORB_DEFS = [
+  { i: 0, rgb: "255,255,255", r: 0.16 },
+  { i: 11, rgb: "236,255,0", r: 0.09 }, { i: 12, rgb: "255,0,42", r: 0.09 },
+  { i: 13, rgb: "236,255,0", r: 0.08 }, { i: 14, rgb: "255,0,42", r: 0.08 },
+  { i: 15, rgb: "236,255,0", r: 0.14 }, { i: 16, rgb: "255,0,42", r: 0.14 },
+  { i: 23, rgb: "236,255,0", r: 0.09 }, { i: 24, rgb: "255,0,42", r: 0.09 },
+  { i: 25, rgb: "236,255,0", r: 0.08 }, { i: 26, rgb: "255,0,42", r: 0.08 },
+  { i: 27, rgb: "236,255,0", r: 0.11 }, { i: 28, rgb: "255,0,42", r: 0.11 },
+];
+const trails = new Map(); // landmark index -> [{x, y, t}]
+function drawPresence(lms, now) {
+  let sc = 0, P = null;
+  if (lms) {
+    const ls = lms[11], rs = lms[12], lh = lms[23], rh = lms[24];
+    if (ls && rs) {
+      const shx = ((ls.x + rs.x) / 2) * overlay.width;
+      const shy = ((ls.y + rs.y) / 2) * overlay.height;
+      const hx = (((lh?.x ?? ls.x) + (rh?.x ?? rs.x)) / 2) * overlay.width;
+      const hy = (((lh?.y ?? ls.y) + (rh?.y ?? rs.y)) / 2) * overlay.height;
+      sc = Math.hypot(shx - hx, shy - hy);
+    }
+    P = (i) => {
+      const p = lms[i];
+      return p && (p.visibility ?? 1) > 0.3
+        ? { x: p.x * overlay.width, y: p.y * overlay.height }
+        : null;
+    };
+  }
+  // Record this frame's trail points; age out the old ones. Trails keep
+  // fading even on untracked frames, so losing you never freezes a streak.
+  for (const d of TRAIL_DEFS) {
+    let arr = trails.get(d.i);
+    if (!arr) trails.set(d.i, (arr = []));
+    const p = P && sc > 8 ? P(d.i) : null;
+    if (p) arr.push({ x: p.x, y: p.y, t: now });
+    while (arr.length && now - arr[0].t > TRAIL_MS) arr.shift();
+  }
   octx.save();
-  octx.globalAlpha = alpha;
-  octx.drawImage(inkCanvas, 0, 0);
+  octx.globalCompositeOperation = "lighter";
+  octx.lineCap = "round";
+  octx.lineJoin = "round";
+  // Two passes per segment: a wide soft glow under a bright core.
+  const wBase = Math.max(3, sc * 0.12);
+  for (const d of TRAIL_DEFS) {
+    const arr = trails.get(d.i);
+    if (!arr || arr.length < 2) continue;
+    for (let k = 1; k < arr.length; k++) {
+      const a = arr[k - 1], b = arr[k];
+      if (b.t - a.t > 250) continue; // tracking gap: do not bridge it
+      const fade = Math.max(0, 1 - (now - b.t) / TRAIL_MS);
+      octx.strokeStyle = `rgba(${d.rgb},${(0.1 * fade).toFixed(3)})`;
+      octx.lineWidth = wBase * 2.4 * fade + 2;
+      octx.beginPath(); octx.moveTo(a.x, a.y); octx.lineTo(b.x, b.y); octx.stroke();
+      octx.strokeStyle = `rgba(${d.rgb},${(0.5 * fade).toFixed(3)})`;
+      octx.lineWidth = wBase * fade + 1;
+      octx.beginPath(); octx.moveTo(a.x, a.y); octx.lineTo(b.x, b.y); octx.stroke();
+    }
+  }
+  // The constellation: a soft orb per joint, white-hot centre into ink.
+  if (P && sc > 8) {
+    for (const o of ORB_DEFS) {
+      const p = P(o.i);
+      if (!p) continue;
+      const r = Math.max(4, sc * o.r);
+      const g = octx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+      g.addColorStop(0, "rgba(255,255,255,0.9)");
+      g.addColorStop(0.35, `rgba(${o.rgb},0.75)`);
+      g.addColorStop(1, `rgba(${o.rgb},0)`);
+      octx.fillStyle = g;
+      octx.beginPath();
+      octx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      octx.fill();
+    }
+  }
   octx.restore();
-  return true;
 }
 
 // ---- Riso print ghost ----
@@ -1069,21 +1121,12 @@ async function runFrame() {
     let bodyVisible = false;
     let lms = pickMainPose(poses);
     if (lms) lms = smoothPose(lms, now);
+    // Constellation + light trails are the live look (unless the IDE look
+    // owns the frame). Runs on untracked frames too, so trails fade out
+    // instead of freezing when you leave the frame.
+    if (!ideMode) drawPresence(lms, now);
     if (lms) {
-      if (ideMode) {
-        // IDE look: the dancer is printed as source code, no outline needed.
-        drawIdeBody(lms);
-      } else {
-        // No persistent overlay on the performer. Tracking feedback is a
-        // moment, not a costume: a soft outline flashes when the camera
-        // (re)acquires you after more than a second untracked, fades out,
-        // and leaves the video clean.
-        if (now - lastTrackedAt > 1200) outlineUntil = now + OUTLINE_FLASH_MS;
-        if (now < outlineUntil) {
-          drawLiveOutline(lms, 0.7 * Math.min(1, (outlineUntil - now) / OUTLINE_FLASH_MS));
-        }
-      }
-      lastTrackedAt = now;
+      if (ideMode) drawIdeBody(lms);
 
       if (keyLandmarksVisible(lms)) {
         bodyVisible = true;
@@ -2732,7 +2775,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v30 (2026-07-12)");
+  console.log("Queercoded build v31 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
