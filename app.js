@@ -2225,10 +2225,11 @@ function drawPlayback(now) {
   // The ghost is printed as a riso figure (grainy red ink over a yellow
   // halo), same visual language as the pose cards but full-size and moving.
   // Codes with no usable torso fall back to the readable white wireframe.
+  // Ghost coords are normalized (0..1); paintBody wants pixels.
   const GP = (i) => {
     const p = ghost[i];
     return p && p.visibility > 0
-      ? { x: p.x, y: p.y, v: true }
+      ? { x: p.x * overlay.width, y: p.y * overlay.height, v: true }
       : { x: 0, y: 0, v: false };
   };
   const gls = GP(11), grs = GP(12), glh = GP(23), grh = GP(24);
@@ -2775,7 +2776,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v31 (2026-07-12)");
+  console.log("Queercoded build v32 (2026-07-12)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
