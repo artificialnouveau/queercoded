@@ -580,10 +580,17 @@ async function switchAlgo(key) {
 }
 
 async function initCamera() {
+  // Widescreen on landscape screens (more horizontal room for arms and
+  // travel); tall on portrait phones so the fullscreen stream keeps the
+  // whole body instead of cropping it. Cameras that cannot match return
+  // their closest mode and the box crops to fit.
+  const portrait = window.innerHeight > window.innerWidth;
   const stream = await navigator.mediaDevices.getUserMedia({
-    // Widescreen: more horizontal room for arms and travel. Cameras that
-    // cannot do 16:9 return their closest mode and the box crops to fit.
-    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+    video: {
+      width: { ideal: portrait ? 720 : 1280 },
+      height: { ideal: portrait ? 1280 : 720 },
+      facingMode: "user",
+    },
     audio: false,
   });
   video.srcObject = stream;
@@ -2019,9 +2026,13 @@ function updateCaptureOverlay(now) {
 }
 
 function renderPhrase() {
+  const chips = phrase.map((w) => `<span class="chip">${escapeHtml(w)}</span>`).join("");
   phraseEl.innerHTML = phrase.length === 0
     ? '<span class="muted">Your matched words appear here…</span>'
-    : phrase.map((w) => `<span class="chip">${escapeHtml(w)}</span>`).join("");
+    : chips;
+  // Kiosk mode mirrors the phrase over the video so the audience reads it.
+  const kp = document.getElementById("kioskPhrase");
+  if (kp) kp.innerHTML = chips;
 }
 
 // ---------- Teaching (movement-delimited, like Perform) ----------
@@ -2275,6 +2286,7 @@ function startPlaybackItems(items, label, key) {
   if (!items || items.length === 0) return;
   clearTimeout(ghostPreviewTimer); // a pending post-save replay must not hijack this
   playback = { items, label, key, idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0, mode: "play" };
+  resetPbPrefs();
   updatePbControls();
   renderCodeList();
 }
@@ -2296,6 +2308,7 @@ function startRehearse(word) {
     idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0,
     mode: "rehearse", phase: "demo",
   };
+  resetPbPrefs();
   updatePbControls();
   renderCodeList();
 }
@@ -2342,7 +2355,7 @@ function renderRoutine() {
   if (!routineListEl) return;
   routineListEl.innerHTML = routine.length
     ? routine.map((w, i) =>
-        `<span class="chip">${i + 1}. ${escapeHtml(w)}<button class="chip-x" data-ri="${i}" aria-label="Remove step">&times;</button></span>`).join("")
+        `<span class="chip" draggable="true" data-idx="${i}" title="Drag to reorder">${i + 1}. ${escapeHtml(w)}<button class="chip-x" data-ri="${i}" aria-label="Remove step">&times;</button></span>`).join("")
     : '<span class="muted">No moves yet: add your codes below, in order.</span>';
   const words = [...new Set(templates.filter((t) => (t.family || "blaze") === currentFamily).map((t) => t.word))];
   routineAddSel.innerHTML = '<option value="">Add a code…</option>' +
@@ -2362,6 +2375,29 @@ routineListEl?.addEventListener("click", (e) => {
   saveRoutine();
   renderRoutine();
 });
+// Drag a routine chip onto another to reorder the choreography.
+let routineDragIdx = null;
+routineListEl?.addEventListener("dragstart", (e) => {
+  const chip = e.target.closest(".chip[data-idx]");
+  if (!chip) return;
+  routineDragIdx = +chip.dataset.idx;
+  e.dataTransfer.effectAllowed = "move";
+});
+routineListEl?.addEventListener("dragover", (e) => {
+  if (routineDragIdx != null) e.preventDefault();
+});
+routineListEl?.addEventListener("drop", (e) => {
+  const chip = e.target.closest(".chip[data-idx]");
+  if (routineDragIdx == null || !chip) { routineDragIdx = null; return; }
+  e.preventDefault();
+  const to = +chip.dataset.idx;
+  const [moved] = routine.splice(routineDragIdx, 1);
+  routine.splice(to, 0, moved);
+  routineDragIdx = null;
+  saveRoutine();
+  renderRoutine();
+});
+routineListEl?.addEventListener("dragend", () => { routineDragIdx = null; });
 routineClearBtn?.addEventListener("click", () => {
   routine = [];
   saveRoutine();
@@ -2386,6 +2422,7 @@ function startRoutine() {
     label: steps[0].word, key: "routine",
     idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0,
   };
+  resetPbPrefs();
   updatePbControls();
   renderCodeList();
 }
@@ -2410,6 +2447,18 @@ document.getElementById("warmupNo")?.addEventListener("click", () => { warmupOff
 // The practice strip (speed / Loop / Steps) belongs to the Perform screen.
 function updatePbControls() {
   pbControls.hidden = !(playback && currentTab === "perform");
+}
+// Practice preferences are PER PLAYBACK: a Loop or half-speed left on from
+// one practice must not silently apply to the next thing played.
+function resetPbPrefs() {
+  pbSpeed = 1;
+  pbLoop = false;
+  pbSteps = false;
+  for (const x of pbControls.querySelectorAll("[data-speed]")) {
+    x.classList.toggle("on", x.dataset.speed === "1");
+  }
+  document.getElementById("pbLoopBtn").classList.remove("on");
+  document.getElementById("pbStepsBtn").classList.remove("on");
 }
 // Mobile bottom sheet: hide/show the panel so the stream stays unobstructed.
 const sheetToggle = document.getElementById("sheetToggle");
@@ -3041,13 +3090,14 @@ codeList.addEventListener("click", (e) => {
 });
 
 // ---------- Export / import ----------
-exportBtn.addEventListener("click", () => {
+function exportCodes(filename = "queercoded-codes.json") {
   const blob = new Blob([JSON.stringify(templates, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "queercoded-codes.json"; a.click();
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
-});
+}
+exportBtn.addEventListener("click", () => exportCodes());
 importBtn.addEventListener("click", () => importFile.click());
 // A code is valid only if its seq is FIXED_LEN frames of NUM_LMS*2 finite
 // numbers. Guards against malformed or hostile files breaking the matcher.
@@ -3089,9 +3139,12 @@ importFile.addEventListener("change", async () => {
   importFile.value = "";
 });
 clearAllBtn.addEventListener("click", () => {
-  if (confirm("Delete all saved codes? This cannot be undone.")) {
-    templates = []; saveTemplates(); renderCodeList();
-  }
+  if (!confirm("Delete all saved codes? A backup file downloads first, so you can Import it if you change your mind.")) return;
+  // Safety net: the wipe always leaves a file behind.
+  if (templates.length) exportCodes("queercoded-codes-backup.json");
+  templates = [];
+  saveTemplates();
+  renderCodeList();
 });
 
 // ---------- AlgoDance zine viewer ----------
@@ -3355,9 +3408,13 @@ soundToggle.addEventListener("change", () => { soundOn = soundToggle.checked; })
 const orientSel = document.getElementById("orientSel");
 localStorage.removeItem("queercoded.orientation.v1"); // orientation no longer persists
 function applyOrientation(mode) {
+  // Vertical is a desktop/installation layout; on small screens it fights
+  // the fullscreen mobile layout, so it is forced off there.
+  if (window.innerWidth <= 900) mode = "landscape";
   document.body.classList.toggle("rot90", mode === "rotated");
 }
 orientSel.addEventListener("change", () => applyOrientation(orientSel.value));
+window.addEventListener("resize", () => applyOrientation(orientSel.value));
 
 speakToggle.addEventListener("change", () => {
   speakOn = speakToggle.checked;
@@ -3403,7 +3460,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v49 (2026-07-13)");
+  console.log("Queercoded build v50 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
@@ -3425,7 +3482,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
   loop();
 
   try {
-    const cam = initCamera().catch((e) => { throw new Error("camera: " + e.message); });
+    const cam = initCamera().catch((e) => { e.isCamera = true; throw e; });
     const pose = initPose().catch((e) => { throw new Error("pose engine: " + e.message); });
     await Promise.all([cam, pose]);
     ready = true;
@@ -3435,6 +3492,15 @@ document.getElementById("introDismiss").addEventListener("click", () => {
   } catch (err) {
     clearTimeout(slow);
     console.error(err);
-    statusEl.textContent = "Error loading " + err.message + " (camera needs https or localhost).";
+    // Camera failures get plain instructions, not developer-speak.
+    if (err.isCamera && (err.name === "NotAllowedError" || err.name === "PermissionDeniedError")) {
+      statusEl.textContent = "Camera access was denied. Click the camera icon in your browser's address bar, allow the camera, then reload this page.";
+    } else if (err.isCamera && (err.name === "NotFoundError" || err.name === "OverconstrainedError")) {
+      statusEl.textContent = "No usable camera was found. Connect or enable one, then reload this page.";
+    } else if (err.isCamera) {
+      statusEl.textContent = "The camera could not start (" + err.message + "). Note it only works over https or localhost.";
+    } else {
+      statusEl.textContent = "Error loading " + err.message + ".";
+    }
   }
 })();

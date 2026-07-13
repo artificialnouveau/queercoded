@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Queercoded: Code a movement</title>
-  <link rel="stylesheet" href="style.css?v=49" />
+  <link rel="stylesheet" href="style.css?v=50" />
 </head>
 <body>
   <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
@@ -41,7 +41,7 @@
       </select>
     </div>
     <h1 class="logo" aria-label="Queercoded"><span aria-hidden="true"><i style="color:#E40303">Q</i><i style="color:#FF8C00">u</i><i style="color:#FFED00">e</i><i style="color:#008026">e</i><i style="color:#004DFF">r</i><i style="color:#750787">c</i><i style="color:#E40303">o</i><i style="color:#FF8C00">d</i><i style="color:#008026">e</i><i style="color:#004DFF">d</i></span></h1>
-    <p class="tagline">Code a movement. Move to speak.</p>
+    <p class="tagline">Code a movement.</p>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button class="tab is-active" data-tab="teach" role="tab" id="tab-teach" aria-controls="pane-teach" aria-selected="true">Teach</button>
       <button class="tab" data-tab="perform" role="tab" id="tab-perform" aria-controls="pane-perform" aria-selected="false" tabindex="-1">Perform</button>
@@ -70,6 +70,8 @@
         </div>
         <div id="bigWord" class="big-word" aria-live="polite"></div>
         <div id="bigStatus" class="big-status" aria-live="assertive"></div>
+        <!-- Kiosk mode: the phrase, mirrored over the video for the audience -->
+        <div id="kioskPhrase" class="kiosk-phrase" aria-hidden="true"></div>
         <div id="closestHint" class="closest-hint" hidden></div>
         <div id="introHint" class="intro-hint" hidden>
           <p>Stand back so your <b>head, shoulders and hands</b> are in view. When glowing dots appear on your joints, you're being tracked; your head, hands and feet leave light trails as you move.</p>
@@ -251,6 +253,6 @@
     </aside>
   </main>
 
-  <script type="module" src="app.js?v=49"></script>
+  <script type="module" src="app.js?v=50"></script>
 </body>
 </html>

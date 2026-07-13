@@ -263,6 +263,7 @@ body.rot90 .video-wrap { width: 100%; height: auto; max-width: none; }
 
 /* Routine builder */
 .routine { margin: 14px 0; }
+.routine .chip[draggable] { cursor: grab; }
 .routine h3 { margin: 0 0 6px; }
 .routine .row-actions { margin-top: 8px; display: flex; gap: 6px; align-items: center; }
 .routine select { max-width: 46%; }
@@ -687,6 +688,29 @@ input:focus-visible,
    fills the screen; matched words overlay it; every control disappears
    except the floating Exit button. Opt-in only, never the default. */
 body.kiosk { background: #000; overflow: hidden; }
+/* Kiosk: the matched phrase floats over the video, readable at a distance. */
+.kiosk-phrase { display: none; }
+body.kiosk .kiosk-phrase {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  position: absolute;
+  left: 50%;
+  bottom: 4%;
+  transform: translateX(-50%);
+  max-width: 92%;
+  pointer-events: none;
+  z-index: 5;
+}
+body.kiosk .kiosk-phrase .chip {
+  background: rgba(10, 10, 14, .62);
+  border: 1px solid rgba(236, 255, 0, .65);
+  color: #fff;
+  font-size: clamp(15px, 2.4vw, 26px);
+  padding: 6px 16px;
+  border-radius: 999px;
+}
 body.kiosk .topbar,
 body.kiosk .panel,
 body.kiosk .status-bar,
