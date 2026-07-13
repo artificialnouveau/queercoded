@@ -1974,8 +1974,9 @@ function updateCaptureOverlay(now) {
 
   // Teach on a beat: while recording, a steady metronome ticks an 8-count
   // (reusing the tutorial numerals and dot strip) so movements are taught ON
-  // counts and play back the same way.
-  if (teach && teach.state === "capturing" && teach.startedAt && !playback) {
+  // counts and play back the same way. It goes quiet during the stop
+  // hand-over-face countdown: that is bookkeeping, not dancing.
+  if (teach && teach.state === "capturing" && teach.startedAt && !teach.stopSince && !playback) {
     const beatMs = 60000 / teachBpm();
     const count = 1 + Math.floor((now - teach.startedAt) / beatMs) % 8;
     if (teach.lastBeat !== count) {
@@ -3365,7 +3366,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v43 (2026-07-13)");
+  console.log("Queercoded build v44 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
