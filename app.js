@@ -3106,7 +3106,7 @@ try { zineRot = JSON.parse(localStorage.getItem(ZINE_ROT_KEY)) || {}; } catch { 
 // Pages known to be sideways in AlgoDance.pdf. Scanned/flattened pages have
 // no text layer for the auto-detector, so these are rotated a quarter-turn
 // right by default (a manual Rotate still overrides and is remembered).
-const ZINE_DEFAULT_ROT = { 4: 90, 5: 90, 6: 90, 7: 270 }; // 270 = 90 to the left
+const ZINE_DEFAULT_ROT = { 4: 90, 5: 90, 6: 90, 7: 90 };
 const zineAutoRot = new Map();
 async function zineExtraRot(page, n) {
   if (zineRot[n] != null) return zineRot[n];
@@ -3380,7 +3380,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v41 (2026-07-13)");
+  console.log("Queercoded build v42 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
