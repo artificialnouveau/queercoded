@@ -246,6 +246,118 @@ body.rot90 .video-wrap { width: 100%; height: auto; max-width: none; }
   font-weight: 700;
 }
 
+/* Warm-up offer on first Perform visit */
+.warmup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid #ECFF00;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* Routine builder */
+.routine { margin: 14px 0; }
+.routine h3 { margin: 0 0 6px; }
+.routine .row-actions { margin-top: 8px; display: flex; gap: 6px; align-items: center; }
+.routine select { max-width: 46%; }
+.chip-x {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: .6;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 0 0 4px;
+}
+.chip-x:hover { opacity: 1; }
+
+/* BPM field */
+#bpmInput { width: 70px; }
+
+/* ---- Mobile: the stream IS the screen ---- */
+.sheet-toggle { display: none; }
+@media (max-width: 900px) {
+  body:not(.rot90) { overflow: hidden; }
+  /* Compact floating header: logo + tab pills in one row over the video */
+  .topbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    margin: 0;
+    background: rgba(10, 10, 14, .75);
+    backdrop-filter: blur(8px);
+  }
+  .tagline, .orient { display: none; }
+  .logo { font-size: 18px; margin: 0; white-space: nowrap; }
+  .tabs { display: flex; flex: 1; overflow-x: auto; gap: 6px; margin: 0; }
+  .layout { display: block; padding: 0; }
+  /* The stream fills the whole screen */
+  .video-wrap {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    max-width: none;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    z-index: 0;
+  }
+  .status-bar {
+    position: fixed;
+    top: 52px; left: 10px; right: 10px;
+    z-index: 25;
+    background: rgba(10, 10, 14, .6);
+    border-radius: 8px;
+    padding: 4px 10px;
+  }
+  .model-row {
+    position: fixed;
+    top: 92px; left: 10px;
+    z-index: 24;
+    background: rgba(10, 10, 14, .6);
+    border-radius: 8px;
+    padding: 4px 8px;
+    margin: 0;
+  }
+  .model-row label { display: none; }
+  .model-row select { max-width: 52vw; }
+  /* The side panel becomes a collapsible bottom sheet over the stream */
+  .panel {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 20;
+    max-height: 46dvh;
+    overflow: auto;
+    border-radius: 14px 14px 0 0;
+    background: rgba(14, 14, 18, .93);
+    transition: transform .25s ease;
+  }
+  body.sheet-collapsed .panel { transform: translateY(calc(100% + 2px)); }
+  .sheet-toggle {
+    display: block;
+    position: fixed;
+    right: 10px; top: 92px;
+    z-index: 26;
+  }
+  .pb-controls { top: 138px; bottom: auto; left: 10px; }
+  /* Reading tabs (About / AlgoDance) keep a full-screen panel */
+  .layout.pdf-full .panel, .layout.content-full .panel {
+    position: fixed;
+    inset: 0;
+    max-height: none;
+    border-radius: 0;
+    transform: none;
+  }
+}
+
 /* Matched word, anchored just above the tracked head (left/top set from JS
    every frame; translate lifts the text fully above the anchor point). */
 .big-word {

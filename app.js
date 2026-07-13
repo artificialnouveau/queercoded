@@ -39,6 +39,12 @@ const modelSel = document.getElementById("modelSel");
 const danceCount = document.getElementById("danceCount");
 const countDots = document.getElementById("countDots");
 const pbControls = document.getElementById("pbControls");
+const bpmInput = document.getElementById("bpmInput");
+const warmupOffer = document.getElementById("warmupOffer");
+const routineListEl = document.getElementById("routineList");
+const routineAddSel = document.getElementById("routineAdd");
+const routineStartBtn = document.getElementById("routineStart");
+const routineClearBtn = document.getElementById("routineClear");
 
 const threshInput = document.getElementById("thresh");
 const threshVal = document.getElementById("threshVal");
@@ -90,6 +96,21 @@ let manualFrames = [];
 let audioCtx = null;
 let playback = null;          // ghost playback of a saved code (see startPlaybackItems)
 let pbSpeed = 1;              // playback tempo: 0.5 / 0.75 / 1
+let teachCountsOn = false;    // the teach metronome currently owns the count display
+let warmupOffered = false;    // the Perform warm-up offer shows once per session
+// Teach-on-a-beat tempo, persisted.
+const BPM_KEY = "queercoded.bpm.v1";
+function teachBpm() {
+  const v = parseInt(bpmInput?.value, 10);
+  return isFinite(v) ? Math.min(160, Math.max(60, v)) : 100;
+}
+if (bpmInput) {
+  bpmInput.value = parseInt(localStorage.getItem(BPM_KEY), 10) || 100;
+  bpmInput.addEventListener("change", () => {
+    bpmInput.value = teachBpm();
+    try { localStorage.setItem(BPM_KEY, String(teachBpm())); } catch {}
+  });
+}
 let pbLoop = false;           // repeat playback until stopped
 let pbSteps = false;          // pause on every count until the pose is hit
 let liveLmsNow = null;        // {lms, at} latest smoothed live pose, for follow feedback
@@ -144,16 +165,25 @@ function travelOf(frames) {
 // ---------- Geometry ----------
 // Normalize landmarks to a flat [x,y,...] vector invariant to position and
 // apparent size: center on hip midpoint, scale by torso length.
+// Landmark x is normalized by image WIDTH and y by HEIGHT, so the same
+// physical pose reads differently at different camera aspect ratios. Scale x
+// into height units first ("square space") so codes match regardless of the
+// camera's aspect; codes stored in this space carry sq:1 and older 4:3 codes
+// are migrated once in loadTemplates.
+function imgAspect() {
+  return overlay.height > 0 ? overlay.width / overlay.height : 16 / 9;
+}
 function normalizePose(lms) {
+  const A = imgAspect();
   const lHip = lms[23], rHip = lms[24], lSho = lms[11], rSho = lms[12];
-  const cx = (lHip.x + rHip.x) / 2;
+  const cx = ((lHip.x + rHip.x) / 2) * A;
   const cy = (lHip.y + rHip.y) / 2;
-  const shx = (lSho.x + rSho.x) / 2;
+  const shx = ((lSho.x + rSho.x) / 2) * A;
   const shy = (lSho.y + rSho.y) / 2;
   const torso = Math.hypot(shx - cx, shy - cy) || 1e-6;
   const out = new Array(NUM_LMS * 2);
   for (let i = 0; i < NUM_LMS; i++) {
-    out[i * 2] = (lms[i].x - cx) / torso;
+    out[i * 2] = (lms[i].x * A - cx) / torso;
     out[i * 2 + 1] = (lms[i].y - cy) / torso;
   }
   return out;
@@ -419,7 +449,26 @@ function loadTemplates() {
       t.seq = resampleSeq(trimmed, FIXED_LEN);
     }
   }
+  for (const t of list) migrateSq(t);
   return list;
+}
+// Codes taught before square-space normalization were captured at 640x480:
+// stretch their x back to physical proportions (4:3) and renormalize by the
+// frame's own torso length. One-time; marked with sq:1. Also applied to
+// imported files from older exports.
+function migrateSq(t) {
+  if (!t || t.sq || !Array.isArray(t.seq)) return t;
+  t.seq = t.seq.map((f) => {
+    const v = f.slice();
+    for (let i = 0; i < v.length; i += 2) v[i] *= 4 / 3;
+    const sx = (v[22] + v[24]) / 2, sy = (v[23] + v[25]) / 2;   // shoulders 11,12
+    const hx = (v[46] + v[48]) / 2, hy = (v[47] + v[49]) / 2;   // hips 23,24
+    const torso = Math.hypot(sx - hx, sy - hy) || 1;
+    for (let i = 0; i < v.length; i++) v[i] /= torso;
+    return v;
+  });
+  t.sq = 1;
+  return t;
 }
 function saveTemplates() {
   localStorage.setItem(STORE_KEY, JSON.stringify(templates));
@@ -1021,7 +1070,10 @@ async function runFrame() {
         if (lh && rh && ls && rs) {
           const cx = (lh.x + rh.x) / 2, cy = (lh.y + rh.y) / 2;
           const shx = (ls.x + rs.x) / 2, shy = (ls.y + rs.y) / 2;
-          liveFrame = { cx, cy, torso: Math.hypot(shx - cx, shy - cy) || 1e-6, at: now };
+          // torso in SQUARE units (matching stored seqs); cx/cy stay in
+          // image units for anchoring.
+          const torso = Math.hypot((shx - cx) * imgAspect(), shy - cy) || 1e-6;
+          liveFrame = { cx, cy, torso, at: now };
         }
         const hands = updateHandsOnFace(lms, now);
         const nearNow = isNearFace();
@@ -1043,7 +1095,9 @@ async function runFrame() {
         const handVis = wristUsable(lms[15], lms[13]) || wristUsable(lms[16], lms[14]);
         if (teach) {
           teachStep(vec, hands, nearNow, now);
-        } else if (currentTab === "perform") {
+        } else if (currentTab === "perform" && !playback) {
+          // Matching pauses while any ghost/routine/rehearse is on screen,
+          // so following along never fires words by accident.
           // Recognition belongs to the Perform tab only: on Teach or Codes an
           // idle body must never fire (or even score) matches.
           if (bgCapture) {
@@ -1153,7 +1207,9 @@ let perfHandsLost = false;        // matching paused because no wrist is tracked
 // then only fires when the live movement is closer to that word than to the
 // user's own background, by a margin, which replaces guessing at absolute
 // thresholds with a comparison against reality.
-const BG_KEY = "queercoded.background.v1";
+// v2: idle windows recorded in square-space normalization (v1 windows were
+// aspect-distorted and are simply abandoned; recalibration takes 10s).
+const BG_KEY = "queercoded.background.v2";
 const BG_MARGIN = 0.85;        // best word must beat the background by this factor
 const BG_CAPTURE_MS = 10000;
 let bgStore = {};
@@ -1431,6 +1487,9 @@ function holdStep(vec, now, face) {
       : !beatsBg ? `background closer (bg=${fmt(bg)})`
       : `distance ${fmt(best.dist)} over threshold ${fmt(thresh)}`;
     diag(`hold "${best.word}" not fired: ${why}`);
+    if (best.dist < thresh * 1.5) {
+      showClosest(best.word, pct, coachTip(ambiguous ? "ambiguous" : !beatsBg ? "bg" : "far", second));
+    }
   }
   return true;
 }
@@ -1538,12 +1597,23 @@ function performStep(vec, now, face) {
       : !beatsBg ? `background closer (bg=${fmt(bg)})`
       : `distance ${fmt(best.dist)} over ${fmt(thresh * FIRE_MARGIN)}`;
     diag(`move best "${best.word}": not fired, ${why}`);
+    // Close but no fire: coach in plain words instead of leaving silence.
+    if (best.dist < thresh * 1.5) {
+      const pct2 = Math.max(0, Math.min(100, (1 - best.dist / thresh) * 100));
+      showClosest(best.word, pct2, coachTip(ambiguous ? "ambiguous" : !beatsBg ? "bg" : "far", second));
+    }
   }
 }
 
-function showClosest(word, pct) {
+// Translate a gate rejection into a human coaching hint.
+function coachTip(gate, second) {
+  if (gate === "ambiguous" && second) return `looks like “${second.word}” too, exaggerate the difference`;
+  if (gate === "bg") return "too close to your idle movement, make it bigger and sharper";
+  return "almost, finish the move cleanly and hold the last pose a beat";
+}
+function showClosest(word, pct, tip) {
   closestHintEl.hidden = false;
-  closestHintEl.textContent = `closest: ${word} · ${Math.round(pct)}%`;
+  closestHintEl.textContent = `closest: ${word} · ${Math.round(pct)}%` + (tip ? ` — ${tip}` : "");
   closestHintEl.style.opacity = (0.35 + 0.6 * pct / 100).toFixed(2);
 }
 function hideClosest() { closestHintEl.hidden = true; }
@@ -1796,6 +1866,32 @@ function updateCaptureOverlay(now) {
   // after a match/save. Driven here every frame so it can never stick on.
   videoWrap.classList.toggle("riso", kind === "rec" || now < risoFlashUntil);
 
+  // Teach on a beat: while recording, a steady metronome ticks an 8-count
+  // (reusing the tutorial numerals and dot strip) so movements are taught ON
+  // counts and play back the same way.
+  if (teach && teach.state === "capturing" && teach.startedAt && !playback) {
+    const beatMs = 60000 / teachBpm();
+    const count = 1 + Math.floor((now - teach.startedAt) / beatMs) % 8;
+    if (teach.lastBeat !== count) {
+      teach.lastBeat = count;
+      danceCount.hidden = false;
+      danceCount.textContent = String(count);
+      danceCount.classList.remove("lead", "tick");
+      void danceCount.offsetWidth;
+      danceCount.classList.add("tick");
+      countDots.hidden = false;
+      const kids = countDots.children;
+      for (let k = 0; k < kids.length; k++) {
+        kids[k].className = k < count ? (k === count - 1 ? "cur" : "on") : "";
+      }
+      countTick(count === 1 || count === 5);
+    }
+    teachCountsOn = true;
+  } else if (teachCountsOn) {
+    teachCountsOn = false;
+    if (!playback) { danceCount.hidden = true; countDots.hidden = true; }
+  }
+
   if (!ready || !teach) return; // Perform manages its own status line
   if (kind === "start") statusEl.textContent = `Keep your face covered… recording in ${secs}`;
   else if (kind === "stop") statusEl.textContent = `Hold… saving in ${secs}`;
@@ -1965,7 +2061,7 @@ function finishTeach(now, timedOut = false) {
   }
   const durMs = Math.max(300, Math.round(now - t.startedAt));
   const seq = resampleSeq(core, FIXED_LEN);
-  const tmpl = { id: newId(), word: t.word, seq, durMs, family: currentFamily, algo: algoChoice, createdAt: Date.now() };
+  const tmpl = { id: newId(), word: t.word, seq, durMs, family: currentFamily, algo: algoChoice, createdAt: Date.now(), sq: 1, bpm: teachBpm() };
   templates.push(tmpl);
   saveTemplates();
   renderCodeList();
@@ -1975,7 +2071,7 @@ function finishTeach(now, timedOut = false) {
   // Ghost replay starts AFTER the SAVED/riso flash has cleared, so it isn't
   // lost in the noise of the save moment; the ghost is worth watching alone.
   clearTimeout(ghostPreviewTimer);
-  ghostPreviewTimer = setTimeout(() => startPlaybackExample(tmpl.id), 1500);
+  ghostPreviewTimer = setTimeout(() => startEchoTest(tmpl), 1500);
   // Guided takes: words with 3 examples calibrate FAR better thresholds, so
   // actively steer toward three, with the button itself naming the next take.
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
@@ -2032,13 +2128,30 @@ function startPlaybackItems(items, label, key) {
   if (!items || items.length === 0) return;
   clearTimeout(ghostPreviewTimer); // a pending post-save replay must not hijack this
   playback = { items, label, key, idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0, mode: "play" };
-  pbControls.hidden = false;
+  updatePbControls();
   renderCodeList();
 }
 // Rehearse: the ghost demonstrates once with counts, then YOUR TURN — a
 // count-in with the start pose held faintly, you perform from memory, and
 // your attempt is scored against the word with the same matcher Perform
 // uses. Cycles demo -> your turn -> result until stopped.
+// Instant echo test after saving: the fresh code is demonstrated once, then
+// you perform it back and it is scored. If your own code does not match you,
+// you learn it ten seconds after teaching it, not later in Perform.
+function startEchoTest(tmpl) {
+  const all = templates.filter((t) =>
+    t.word.toLowerCase() === tmpl.word.toLowerCase() && (t.family || "blaze") === currentFamily);
+  playback = {
+    items: [tmpl],
+    allItems: all.length ? all : [tmpl],
+    label: tmpl.word,
+    key: "rh:" + tmpl.word.toLowerCase(),
+    idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0,
+    mode: "rehearse", phase: "demo", once: true,
+  };
+  updatePbControls();
+  renderCodeList();
+}
 function startRehearse(word) {
   const all = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase());
   if (!all.length) return;
@@ -2053,7 +2166,7 @@ function startRehearse(word) {
     idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0,
     mode: "rehearse", phase: "demo",
   };
-  pbControls.hidden = false;
+  updatePbControls();
   renderCodeList();
 }
 // Collapse near-duplicate examples for word playback: takes whose DTW distance
@@ -2088,6 +2201,92 @@ function startPlaybackExample(id) {
   if (t) startPlaybackItems([t], t.word, "ex:" + id);
 }
 
+// ---- Routine: an ordered choreography of saved codes ----
+const ROUTINE_KEY = "queercoded.routine.v1";
+let routine = [];
+try { routine = JSON.parse(localStorage.getItem(ROUTINE_KEY)) || []; } catch { routine = []; }
+function saveRoutine() {
+  try { localStorage.setItem(ROUTINE_KEY, JSON.stringify(routine)); } catch {}
+}
+function renderRoutine() {
+  if (!routineListEl) return;
+  routineListEl.innerHTML = routine.length
+    ? routine.map((w, i) =>
+        `<span class="chip">${i + 1}. ${escapeHtml(w)}<button class="chip-x" data-ri="${i}" aria-label="Remove step">&times;</button></span>`).join("")
+    : '<span class="muted">No moves yet: add your codes below, in order.</span>';
+  const words = [...new Set(templates.filter((t) => (t.family || "blaze") === currentFamily).map((t) => t.word))];
+  routineAddSel.innerHTML = '<option value="">Add a code…</option>' +
+    words.map((w) => `<option value="${encodeURIComponent(w)}">${escapeHtml(w)}</option>`).join("");
+  routineStartBtn.disabled = routine.length === 0;
+}
+routineAddSel?.addEventListener("change", () => {
+  if (!routineAddSel.value) return;
+  routine.push(decodeURIComponent(routineAddSel.value));
+  saveRoutine();
+  renderRoutine();
+});
+routineListEl?.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ri]");
+  if (!b) return;
+  routine.splice(+b.dataset.ri, 1);
+  saveRoutine();
+  renderRoutine();
+});
+routineClearBtn?.addEventListener("click", () => {
+  routine = [];
+  saveRoutine();
+  renderRoutine();
+});
+routineStartBtn?.addEventListener("click", () => {
+  stopPlayback();
+  startRoutine();
+});
+function startRoutine() {
+  const steps = [];
+  for (const w of routine) {
+    const items = templates.filter((t) =>
+      t.word.toLowerCase() === w.toLowerCase() && (t.family || "blaze") === currentFamily);
+    if (items.length) steps.push({ word: w, items, rep: playbackReps(items)[0] });
+  }
+  if (!steps.length) return;
+  clearTimeout(ghostPreviewTimer);
+  playback = {
+    mode: "routine", steps, stepIdx: 0, phase: "cue", scores: [],
+    items: [steps[0].rep], allItems: steps[0].items,
+    label: steps[0].word, key: "routine",
+    idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0,
+  };
+  updatePbControls();
+  renderCodeList();
+}
+// Warm-up: play every word once with counts before matching starts.
+function startWarmup() {
+  const words = [...new Set(templates.filter((t) => (t.family || "blaze") === currentFamily).map((t) => t.word))];
+  const items = [];
+  for (const w of words) {
+    const its = templates.filter((t) =>
+      t.word.toLowerCase() === w.toLowerCase() && (t.family || "blaze") === currentFamily);
+    const rep = playbackReps(its)[0];
+    if (rep) items.push({ ...rep, _label: w });
+  }
+  if (items.length) startPlaybackItems(items, "warm-up", "warmup");
+}
+document.getElementById("warmupYes")?.addEventListener("click", () => {
+  warmupOffer.hidden = true;
+  startWarmup();
+});
+document.getElementById("warmupNo")?.addEventListener("click", () => { warmupOffer.hidden = true; });
+
+// The practice strip (speed / Loop / Steps) belongs to the Perform screen.
+function updatePbControls() {
+  pbControls.hidden = !(playback && currentTab === "perform");
+}
+// Mobile bottom sheet: hide/show the panel so the stream stays unobstructed.
+const sheetToggle = document.getElementById("sheetToggle");
+sheetToggle?.addEventListener("click", () => {
+  const collapsed = document.body.classList.toggle("sheet-collapsed");
+  sheetToggle.textContent = collapsed ? "Show panel" : "Hide panel";
+});
 function stopPlayback() {
   playback = null;
   danceCount.hidden = true;
@@ -2179,13 +2378,14 @@ function ghostFrameAt(cur, p, ax, ay, asc) {
   const frac = f - i;
   const a = cur.seq[i], b = cur.seq[Math.min(i + 1, FIXED_LEN - 1)];
   const ghost = [];
+  const A = imgAspect(); // stored x is in square (height) units; images are not
   for (let k = 0; k < NUM_LMS; k++) {
     const vx = a[k * 2] * (1 - frac) + b[k * 2] * frac;
     const vy = a[k * 2 + 1] * (1 - frac) + b[k * 2 + 1] * frac;
     // Slots a 17-point code never filled stay at the origin; mark them
     // invisible so the painters skip them instead of drawing to (0,0).
     const filled = a[k * 2] !== 0 || a[k * 2 + 1] !== 0 || b[k * 2] !== 0 || b[k * 2 + 1] !== 0;
-    ghost.push({ x: ax + vx * asc, y: ay + vy * asc, visibility: filled ? 1 : 0 });
+    ghost.push({ x: ax + (vx * asc) / A, y: ay + vy * asc, visibility: filled ? 1 : 0 });
   }
   return ghost;
 }
@@ -2308,7 +2508,9 @@ function drawPlayback(now) {
   pb.lastNow = now;
   if (!pb.waiting) pb.tRel += dt * pbSpeed;
 
-  const cur = pb.items[Math.min(pb.idx, pb.items.length - 1)];
+  const routineMode = pb.mode === "routine";
+  const step = routineMode ? pb.steps[Math.min(pb.stepIdx, pb.steps.length - 1)] : null;
+  const cur = routineMode ? step.rep : pb.items[Math.min(pb.idx, pb.items.length - 1)];
   const dur = Math.min(5000, Math.max(800, cur.durMs || 2000));
   const beat = dur / 8;
   const lead = beat * 4; // the "5 6 7 8" count-in
@@ -2316,14 +2518,26 @@ function drawPlayback(now) {
     pb.focusFor = cur;
     pb.focus = focusJoints(cur.seq);
   }
-  const rehearse = pb.mode === "rehearse";
+  const rehearse = pb.mode === "rehearse" || routineMode;
   const ph = rehearse ? pb.phase : "demo";
   const nextPhase = (phase) => {
     pb.phase = phase;
     pb.tRel = 0;
     pb.lastCount = 0;
     pb.stepDone = 0;
+    pb.cueShown = false;
   };
+
+  // Routine: each step opens with a cue card naming the next move.
+  if (ph === "cue") {
+    if (!pb.cueShown) {
+      pb.cueShown = true;
+      pb.label = step.word;
+      flashBigStatus(`NEXT: ${step.word}`, "", 1400);
+      speak(step.word); // voice cue, so eyes can stay off the screen
+    }
+    if (pb.tRel >= 1600) { nextPhase("turnLead"); return; }
+  }
 
   // ---- phase / item transitions ----
   if (ph === "demo" && pb.tRel >= lead + dur) {
@@ -2340,6 +2554,7 @@ function drawPlayback(now) {
     return;
   }
   if (ph === "turnLead" && pb.tRel >= lead) {
+    if (routineMode) pb.allItems = step.items; // score against this step's word
     nextPhase("turn");
     pb.capture = []; // runFrame fills this with normalized poses
     return;
@@ -2347,12 +2562,40 @@ function drawPlayback(now) {
   if (ph === "turn" && pb.tRel >= dur + beat) {
     pb.result = scoreRehearse(pb);
     pb.capture = null;
+    if (routineMode) pb.scores.push(pb.result);
     if (pb.result.ok) { flashRiso(now); ping(); }
     flashBigStatus(pb.result.big, pb.result.ok ? "" : "stop", 2000);
     nextPhase("result");
     return;
   }
-  if (ph === "result" && pb.tRel >= 2300) { nextPhase("demo"); return; } // rehearse loops until stopped
+  if (ph === "result" && pb.tRel >= 2300) {
+    if (pb.once) {
+      // Echo test: one cycle, then verdict in the teach message.
+      setTeachMsg(pb.result.ok
+        ? `Echo test passed: ${pb.result.pct}% match. “${pb.label}” is learnable.`
+        : `Echo test: ${pb.result.pct}%. Your fresh code didn't match you back; consider recording “${pb.label}” again.`,
+        pb.result.ok ? "" : "warn");
+      stopPlayback();
+      return;
+    }
+    if (pb.mode === "routine") {
+      pb.stepIdx++;
+      if (pb.stepIdx >= pb.steps.length) {
+        const hits = pb.scores.filter((s) => s.ok).length;
+        const avg = Math.round(pb.scores.reduce((s, r) => s + r.pct, 0) / pb.scores.length);
+        pb.summary = `Routine done: ${hits}/${pb.scores.length} hits, average ${avg}%.`;
+        flashBigStatus(`${hits}/${pb.scores.length} · ${avg}%`, hits === pb.scores.length ? "" : "stop", 2800);
+        if (hits === pb.scores.length) flashRiso(now);
+        nextPhase("done");
+        return;
+      }
+      nextPhase("cue");
+      return;
+    }
+    nextPhase("demo"); // rehearse loops until stopped
+    return;
+  }
+  if (ph === "done" && pb.tRel >= 3000) { stopPlayback(); return; }
 
   // ---- timeline for this frame ----
   let leading = false, p = 0, count = null, showGhost = true, ghostAlpha = 1;
@@ -2362,6 +2605,9 @@ function drawPlayback(now) {
     count = leading
       ? 5 + Math.min(3, Math.floor(pb.tRel / beat))
       : 1 + Math.min(7, Math.floor(p * 8));
+  } else if (ph === "cue") {
+    leading = true;
+    ghostAlpha = 0.3; // the next move's start pose, faintly, under the cue card
   } else if (ph === "turnLead") {
     leading = true;
     ghostAlpha = 0.3; // the start pose lingers faintly while you get set
@@ -2492,16 +2738,20 @@ function drawPlayback(now) {
   }
 
   // Status line per phase.
-  if (ph === "turnLead") {
+  if (ph === "cue") {
+    statusEl.textContent = `Routine ${pb.stepIdx + 1}/${pb.steps.length}: next is “${step.word}”…`;
+  } else if (ph === "turnLead") {
     statusEl.textContent = `Your turn: perform “${pb.label}” from memory after the count-in…`;
   } else if (ph === "turn") {
     statusEl.textContent = `Go! Perform “${pb.label}”.`;
   } else if (ph === "result") {
     statusEl.textContent = pb.result.msg;
+  } else if (ph === "done") {
+    statusEl.textContent = pb.summary;
   } else {
     statusEl.textContent =
-      (rehearse ? `Rehearsing “${pb.label}”: watch first` : `Playing “${pb.label}”`) +
-      (!rehearse && pb.items.length > 1 ? ` (example ${pb.idx + 1}/${pb.items.length})` : "") +
+      (rehearse ? `Rehearsing “${pb.label}”: watch first` : `Playing “${cur._label || pb.label}”`) +
+      (!rehearse && pb.items.length > 1 ? ` (${pb.idx + 1}/${pb.items.length})` : "") +
       (pb.focus.label ? ` · watch the ${pb.focus.label}` : "") +
       (pb.waiting ? " · hit the pose to continue (or press Space)" : "");
   }
@@ -2596,6 +2846,7 @@ const FAM_LABEL = { blaze: "BlazePose", movenet: "MoveNet", yolo: "YOLO" };
 // your codes live under a different algorithm.
 function renderPerformable() {
   if (!performListEl) return;
+  renderRoutine(); // keep the routine builder's word list in sync
   const words = [], seen = new Set(), otherFams = new Set();
   for (const t of templates) {
     const fam = t.family || "blaze";
@@ -2704,7 +2955,7 @@ importFile.addEventListener("change", async () => {
       const sig = codeSignature(t);
       if (seen.has(sig)) { skipped++; continue; }
       seen.add(sig);
-      templates.push({ ...t, id: newId(), createdAt: t.createdAt || Date.now() });
+      templates.push(migrateSq({ ...t, id: newId(), createdAt: t.createdAt || Date.now() }));
       added++;
     }
     saveTemplates();
@@ -2950,6 +3201,13 @@ function activateTab(tab, focus = false) {
   moving = false; // drop any half-finished Perform move
   hideClosest();
   barEl.style.width = "0%";
+  updatePbControls(); // the practice strip only shows on Perform
+  // First Perform visit each session: offer a warm-up run of your codes.
+  if (name === "perform" && !warmupOffered) {
+    warmupOffered = true;
+    if (templates.some((t) => (t.family || "blaze") === currentFamily)) warmupOffer.hidden = false;
+  }
+  if (name !== "perform") warmupOffer.hidden = true;
   if (ready) setPerformState();
   if (focus) tab.focus();
 }
@@ -3038,7 +3296,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v38 (2026-07-13)");
+  console.log("Queercoded build v39 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();

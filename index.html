@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Queercoded: move to speak</title>
-  <link rel="stylesheet" href="style.css?v=38" />
+  <link rel="stylesheet" href="style.css?v=39" />
 </head>
 <body>
   <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
@@ -25,6 +25,9 @@
 
   <!-- Reopens the collapsed header while reading the AlgoDance zine. -->
   <button id="headerToggle" class="header-toggle" hidden>Menu</button>
+
+  <!-- Mobile: collapses the bottom sheet so the stream is unobstructed. -->
+  <button id="sheetToggle" class="btn small sheet-toggle">Hide panel</button>
 
   <!-- Leaves kiosk (fullscreen performance) mode. -->
   <button id="kioskExit" class="kiosk-exit" hidden>Exit kiosk</button>
@@ -102,9 +105,28 @@
         <h2>Perform</h2>
         <p class="muted">Just perform. The app watches your movements continuously; when one matches a saved code, its word appears above your head, is spoken aloud, and joins your phrase below. Striking and <b>holding a pose</b> for half a second counts too, no motion needed. <b>Keep at least one hand visible to the camera</b>: hands carry most of a movement, so matching pauses while both hands are out of view.</p>
 
+        <div id="warmupOffer" class="warmup" hidden>
+          <span>Warm up first? Dance each of your codes once, with counts, before matching starts.</span>
+          <span class="row-actions">
+            <button id="warmupYes" class="btn small">Warm up</button>
+            <button id="warmupNo" class="btn ghost small">Skip</button>
+          </span>
+        </div>
+
         <div class="performable">
           <h3>Your codes</h3>
           <div id="performList" class="chips" aria-live="polite"></div>
+        </div>
+
+        <div class="routine">
+          <h3>Routine</h3>
+          <div id="routineList" class="chips"></div>
+          <div class="row-actions">
+            <select id="routineAdd"><option value="">Add a code…</option></select>
+            <button id="routineStart" class="btn small">Start routine</button>
+            <button id="routineClear" class="btn ghost small">Clear</button>
+          </div>
+          <small class="muted">Chain codes into a choreography. Each move is cued by name, counted in, performed from memory, and scored; you get a routine score at the end.</small>
         </div>
 
         <button id="bgBtn" class="btn small block">Calibrate: learn my idle movement (10s)</button>
@@ -169,6 +191,12 @@
           <datalist id="wordList"></datalist>
         </label>
 
+        <label class="field">
+          <span>Tempo</span>
+          <input id="bpmInput" type="number" min="60" max="160" step="5" value="100" /> BPM
+          <small class="muted">While recording, a metronome ticks an 8-count at this tempo. Teach your movement ON the counts and it will play back, step through, and chain far more naturally.</small>
+        </label>
+
         <button id="recordBtn" class="btn primary block">Record movement</button>
         <p id="teachMsg" class="teach-msg muted"></p>
         <div id="teachPreview" class="pose-strip-wrap" hidden></div>
@@ -223,6 +251,6 @@
     </aside>
   </main>
 
-  <script type="module" src="app.js?v=38"></script>
+  <script type="module" src="app.js?v=39"></script>
 </body>
 </html>
