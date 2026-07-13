@@ -91,12 +91,15 @@ let speakOn = true;
 // Per-word recognition thresholds, auto-calibrated from each word's examples.
 // Rebuilt whenever the code set or algorithm family changes. See matchAndFire.
 let wordStats = new Map();
+let wordBlends = new Map();   // word -> averaged multi-take pseudo-template
 let manualCapturing = false;
 let manualFrames = [];
 let audioCtx = null;
 let playback = null;          // ghost playback of a saved code (see startPlaybackItems)
 let pbSpeed = 1;              // playback tempo: 0.5 / 0.75 / 1
 let teachCountsOn = false;    // the teach metronome currently owns the count display
+let rearmWord = null;         // hands-free next-take arming (same word, Teach tab)
+let rearmSince = 0;
 let warmupOffered = false;    // the Perform warm-up offer shows once per session
 // Teach-on-a-beat tempo, persisted.
 const BPM_KEY = "queercoded.bpm.v1";
@@ -393,12 +396,15 @@ for (const i of [27, 28, 29, 30, 31, 32]) LM_WEIGHT[i] = 3;   // ankles, feet
 const LM_WEIGHT_SUM = LM_WEIGHT.reduce((s, w) => s + w, 0);
 
 // Weighted mean per-landmark euclidean distance between two normalized poses.
-function poseDist(a, b) {
+// Optional per-call weights (w, wSum) replace the global LM_WEIGHT: used for
+// blend variance maps and live tracking confidence.
+function poseDist(a, b, w, wSum) {
+  const W = w || LM_WEIGHT;
   let s = 0;
   for (let i = 0; i * 2 < a.length; i++) {
-    s += LM_WEIGHT[i] * Math.hypot(a[i * 2] - b[i * 2], a[i * 2 + 1] - b[i * 2 + 1]);
+    s += W[i] * Math.hypot(a[i * 2] - b[i * 2], a[i * 2 + 1] - b[i * 2 + 1]);
   }
-  return s / LM_WEIGHT_SUM;
+  return s / (w ? wSum : LM_WEIGHT_SUM);
 }
 
 // Resample a sequence of pose vectors to exactly L frames (linear interp).
@@ -421,17 +427,31 @@ function resampleSeq(frames, L) {
 
 // Dynamic Time Warping between two equal-length pose sequences, normalized by
 // path length so scores are comparable. Robust to differences in tempo.
-function dtw(A, B) {
+function dtw(A, B, w, wSum) {
   const m = A.length, n = B.length;
   const D = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(Infinity));
   D[0][0] = 0;
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      const c = poseDist(A[i - 1], B[j - 1]);
+      const c = poseDist(A[i - 1], B[j - 1], w, wSum);
       D[i][j] = c + Math.min(D[i - 1][j], D[i][j - 1], D[i - 1][j - 1]);
     }
   }
   return D[m][n] / (m + n);
+}
+// Effective weights for matching against template `t`: the template's own
+// variance map (blends) combined with the live tracking confidence, when
+// either exists. Null means "use the plain global weights".
+function effWeights(t, conf) {
+  let w = t?.w || null;
+  if (conf) {
+    const base = w || LM_WEIGHT;
+    w = base.map((x, i) => x * conf[i]);
+  }
+  if (!w) return null;
+  let wSum = 0;
+  for (const x of w) wSum += x;
+  return wSum > 1e-6 ? { w, wSum } : null;
 }
 
 // ---------- Persistence (localStorage) ----------
@@ -1110,7 +1130,10 @@ async function runFrame() {
             if (manualCapturing) manualFrames.push(vec); // deliberate capture: record everything
           } else if (handVis) {
             // Perform is continuous but fires only when a whole move completes.
-            performStep(vec, now, hands.left || hands.right);
+            // Per-joint tracking confidence rides along so barely-seen joints
+            // count less in matching.
+            const conf = lms.map((p) => Math.max(0.2, Math.min(1, p?.visibility ?? 0.5)));
+            performStep(vec, now, hands.left || hands.right, conf);
             if (perfHandsLost) { perfHandsLost = false; setPerformState(); }
           } else {
             moving = false;      // a half-tracked move is not evidence
@@ -1127,7 +1150,21 @@ async function runFrame() {
         // R/L letters also show on the idle Teach tab (small, quiet) so you
         // see which hand starts and which stops BEFORE clicking Record.
         if (teach && !teach.manual && !playback) { drawRestTargets(); drawHandLabels(lms); }
-        else if (!teach && currentTab === "teach" && !playback) drawHandLabels(lms);
+        else if (!teach && currentTab === "teach" && !playback) {
+          drawHandLabels(lms);
+          // Between takes of the same word, covering the face with the RIGHT
+          // hand (held ~half a second) starts the next take, no click needed.
+          if (rearmWord && wordInput.value.trim().toLowerCase() === rearmWord) {
+            if (hands.right) {
+              if (!rearmSince) rearmSince = now;
+              else if (now - rearmSince > 450) { rearmSince = 0; startTeach(); }
+            } else {
+              rearmSince = 0;
+            }
+          } else {
+            rearmSince = 0;
+          }
+        }
       }
 
       // Keep the matched word floating just above the head. The video is
@@ -1305,9 +1342,30 @@ function maxDevFrom(frames, ref) {
 // its own classification.
 const FIRE_GAP_MS = 700;
 
-function perfPush(vec, now, face) {
-  perfBuf.push({ vec, t: now, face: !!face });
+// Every code of the current family PLUS each word's blend pseudo-template.
+function matchPool() {
+  const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
+  for (const b of wordBlends.values()) pool.push(b);
+  return pool;
+}
+
+function perfPush(vec, now, face, conf) {
+  perfBuf.push({ vec, t: now, face: !!face, conf });
   while (perfBuf.length && perfBuf[0].t < now - PERF_BUF_MS) perfBuf.shift();
+}
+// Per-landmark tracking confidence averaged over a window: joints the model
+// barely saw (hallucinated wrists, clipped legs) count less in matching.
+function confInRange(t0, t1) {
+  const acc = new Array(NUM_LMS).fill(0);
+  let n = 0;
+  for (const e of perfBuf) {
+    if (e.t < t0 || e.t > t1 || !e.conf) continue;
+    n++;
+    for (let i = 0; i < NUM_LMS; i++) acc[i] += e.conf[i];
+  }
+  if (!n) return null;
+  for (let i = 0; i < NUM_LMS; i++) acc[i] = Math.max(0.15, Math.min(1, acc[i] / n));
+  return acc;
 }
 
 // Hand-on-face share of a window, and whether its tail ends on the face.
@@ -1384,9 +1442,11 @@ function devOf(t) {
 }
 const DEV_RATIO_MIN = 0.5; // live excursion must be at least half the code's
 
-// Best distance per word for a candidate segment (current algorithm family).
-function scoreSegment(frames) {
-  const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
+// Best distance per word for a candidate segment (current algorithm family,
+// takes AND multi-take blends). `conf` (optional) down-weights joints the
+// tracker barely saw during the segment.
+function scoreSegment(frames, conf) {
+  const pool = matchPool();
   if (pool.length === 0) {
     bestWordEl.textContent = templates.length ? "none for this algorithm" : "none yet";
     return null;
@@ -1399,7 +1459,8 @@ function scoreSegment(frames) {
   for (const t of pool) {
     if (!energyCompatible(eLive, t)) continue;          // stillness can't match movement
     if (devLive < devOf(t) * DEV_RATIO_MIN) continue;   // near-neutral wobble can't match a real excursion
-    const d = dtw(live, t.seq);
+    const ew = effWeights(t, conf);
+    const d = ew ? dtw(live, t.seq, ew.w, ew.wSum) : dtw(live, t.seq);
     const k = t.word.toLowerCase();
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
   }
@@ -1432,15 +1493,15 @@ const HOLD_SHIFT = 0.09;     // pose change (weighted) that counts as a NEW hold
 let stillSince = 0;
 let holdFired = false;
 let holdRefVec = null;
-function holdDistToCode(vec, t) {
+function holdDistToCode(vec, t, ew) {
   let m = Infinity;
   for (const f of t.seq) {
-    const d = poseDist(vec, f);
+    const d = ew ? poseDist(vec, f, ew.w, ew.wSum) : poseDist(vec, f);
     if (d < m) m = d;
   }
   return m;
 }
-function holdStep(vec, now, face) {
+function holdStep(vec, now, face, conf) {
   if (face) { stillSince = now; holdFired = false; return; }
   if (!holdRefVec || poseDist(vec, holdRefVec) > HOLD_SHIFT) {
     holdRefVec = vec.slice(); // pose changed: a fresh hold begins
@@ -1450,11 +1511,11 @@ function holdStep(vec, now, face) {
   if (holdFired || !stillSince || now - stillSince < HOLD_MS) return false;
   // Neutral standing is not a pose.
   if (!restPose || poseDist(vec, restPose) < REST_DEV_MIN) return false;
-  const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
+  const pool = matchPool();
   if (pool.length === 0) return false;
   const perWord = new Map();
   for (const t of pool) {
-    const d = holdDistToCode(vec, t);
+    const d = holdDistToCode(vec, t, effWeights(t, conf));
     const k = t.word.toLowerCase();
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
   }
@@ -1497,15 +1558,15 @@ let holdDiagAt = 0;
 
 // One Perform frame: track motion, show live feedback, and fire ONLY when a
 // move completes (settles), matched over the whole segment.
-function performStep(vec, now, face) {
-  perfPush(vec, now, face);
+function performStep(vec, now, face, conf) {
+  perfPush(vec, now, face, conf);
   const sp = speedNow(now);
   learnRestPose(vec, sp);
 
   // Pose-first: the hold matcher runs EVERY frame, tracking stillness by
   // pose drift rather than the motion segmenter, so a struck-and-held pose
   // is recognized even when limb jitter keeps the segmenter in "moving".
-  const holding = holdStep(vec, now, face);
+  const holding = holdStep(vec, now, face, conf);
 
   if (!moving) {
     if (sp > MOVE_START) {
@@ -1552,25 +1613,36 @@ function performStep(vec, now, face) {
     diag(`move rejected: ${gate}`);
     barEl.style.width = "0%"; hideClosest(); return;
   }
-  let ranked = scoreSegment(segFrames);
+  let ranked = scoreSegment(segFrames, confInRange(moveStart, lastActive));
   let chosen = segFrames;
-  // Also score the full recent WINDOW at typical code length (stillness
-  // included). This covers two failure modes the bare motion segment cannot:
-  // a code with an internal hold (raise, hold, lower) spans MORE than one
-  // motion segment, and two poses chained without a full settle merge into
-  // one long segment that scores closest to the FIRST pose. The better
+  // Also score recent WINDOWS at code-typical lengths (stillness included).
+  // This covers two failure modes the bare motion segment cannot: a code
+  // with an internal hold (raise, hold, lower) spans MORE than one motion
+  // segment, and two poses chained without a full settle merge into one long
+  // segment that scores closest to the FIRST pose. Beat-taught codes add
+  // BEAT-QUANTIZED candidates: their length snapped to whole counts of
+  // their own tempo, plus one count either side, so capture aligns to the
+  // taught count structure instead of segmentation guesses. The best
   // interpretation wins.
-  const durs = templates
-    .filter((t) => (t.family || "blaze") === currentFamily)
-    .map((t) => t.durMs || 2000)
-    .sort((x, y) => x - y);
-  if (durs.length) {
-    const medDur = durs[Math.floor(durs.length / 2)];
-    const win = framesInRange(lastActive - medDur, lastActive);
-    if (win.length >= MIN_SEG_FRAMES) {
-      const rankedWin = scoreSegment(win);
-      if (rankedWin && (!ranked || rankedWin[0].dist < ranked[0].dist)) { ranked = rankedWin; chosen = win; }
+  const fam = templates.filter((t) => (t.family || "blaze") === currentFamily);
+  const cand = new Set();
+  const durs = fam.map((t) => t.durMs || 2000).sort((x, y) => x - y);
+  if (durs.length) cand.add(durs[Math.floor(durs.length / 2)]);
+  for (const t of fam) {
+    if (!t.bpm || !t.durMs) continue;
+    const beatMs = 60000 / t.bpm;
+    const q = Math.max(1, Math.round(t.durMs / beatMs)) * beatMs;
+    for (const d of [q, q - beatMs, q + beatMs]) {
+      if (d >= 500 && d <= 6000) cand.add(Math.round(d / 50) * 50);
     }
+  }
+  let tried = 0;
+  for (const d of cand) {
+    if (++tried > 8) break; // bound the per-settle matching cost
+    const win = framesInRange(lastActive - d, lastActive);
+    if (win.length < MIN_SEG_FRAMES) continue;
+    const rankedWin = scoreSegment(win, confInRange(lastActive - d, lastActive));
+    if (rankedWin && (!ranked || rankedWin[0].dist < ranked[0].dist)) { ranked = rankedWin; chosen = win; }
   }
   if (!ranked) {
     diag("move rejected: no code with comparable energy/excursion");
@@ -1638,6 +1710,39 @@ function recomputeWordStats() {
     byWord.get(k).push(t);
   }
   const entries = [...byWord.entries()];
+  // Multi-take blending: for words with 2+ takes, build ONE averaged
+  // template plus a per-landmark variance map. Joints the teacher performs
+  // consistently across takes get full weight; wobbly joints count less. The
+  // blend joins the match pool as a pseudo-template.
+  wordBlends = new Map();
+  tmplEnergy.clear(); // blend seqs change: drop cached energies/excursions
+  tmplDev.clear();
+  for (const [k, items] of entries) {
+    if (items.length < 2) continue;
+    const takes = items.map((t) => t.seq);
+    const seq = [];
+    const varSum = new Array(NUM_LMS).fill(0);
+    for (let f = 0; f < FIXED_LEN; f++) {
+      const mean = new Array(NUM_LMS * 2).fill(0);
+      for (const s of takes) for (let i = 0; i < mean.length; i++) mean[i] += s[f][i];
+      for (let i = 0; i < mean.length; i++) mean[i] /= takes.length;
+      seq.push(mean);
+      for (const s of takes) {
+        for (let i = 0; i < NUM_LMS; i++) {
+          varSum[i] += (s[f][i * 2] - mean[i * 2]) ** 2 + (s[f][i * 2 + 1] - mean[i * 2 + 1]) ** 2;
+        }
+      }
+    }
+    const n = FIXED_LEN * takes.length;
+    const w = LM_WEIGHT.map((base, i) => base / (1 + 2.5 * Math.sqrt(varSum[i] / n)));
+    let wSum = 0;
+    for (const x of w) wSum += x;
+    const durMs = Math.round(items.reduce((s, t) => s + (t.durMs || 2000), 0) / items.length);
+    wordBlends.set(k, {
+      id: "blend:" + k, word: items[0].word, seq, w, wSum, durMs,
+      family: currentFamily, blend: true,
+    });
+  }
   for (const [k, items] of entries) {
     let auto = null;
     if (items.length >= 2) {
@@ -1686,7 +1791,7 @@ function thresholdFor(word) {
 function matchAndFire(frames, now) {
   // Only compare against codes taught with the current algorithm family; the
   // three algorithms do not agree on scale, so cross-family matching is noise.
-  const pool = templates.filter((t) => (t.family || "blaze") === currentFamily);
+  const pool = matchPool();
   if (pool.length === 0) {
     bestWordEl.textContent = templates.length ? "no codes for this algorithm" : "no codes yet";
     return;
@@ -1700,7 +1805,8 @@ function matchAndFire(frames, now) {
     if (!energyCompatible(eLive, t)) continue;        // stillness can't match movement
     if (devLive < devOf(t) * DEV_RATIO_MIN) continue; // near-neutral wobble can't match a real excursion
     const k = t.word.toLowerCase();
-    const d = dtw(live, t.seq);
+    const ew = effWeights(t, null); // manual capture has no per-frame confidence
+    const d = ew ? dtw(live, t.seq, ew.w, ew.wSum) : dtw(live, t.seq);
     if (!perWord.has(k) || d < perWord.get(k).dist) perWord.set(k, { word: t.word, dist: d });
   }
   if (perWord.size === 0) {
@@ -2078,10 +2184,14 @@ function finishTeach(now, timedOut = false) {
   let msg;
   if (n < 3) {
     recordBtn.textContent = `Record take ${n + 1} of 3`;
-    msg = `Take ${n} of 3 saved for “${t.word}”. Do the SAME movement again — three takes make it much more reliable.`;
+    msg = `Take ${n} of 3 saved for “${t.word}”. Do the SAME movement again — three takes make it much more reliable. Just cover your face with your RIGHT hand to record the next take, no click needed.`;
   } else {
     msg = `“${t.word}” now has ${n} takes — nicely calibrated. Switch to Perform to try it, or type a new word.`;
   }
+  // Follow-up takes arm hands-free: covering the face with the right hand
+  // starts the next take of the SAME word without touching the mouse.
+  rearmWord = n < 3 ? t.word.toLowerCase() : null;
+  rearmSince = 0;
   if (timedOut) msg += " (Recording hit its time cap; covering your face to finish was never detected.)";
   setTeachMsg(msg, "ok");
   // Keep the word so the next Record adds another example; select it for easy edit.
@@ -3296,7 +3406,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v39 (2026-07-13)");
+  console.log("Queercoded build v40 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
