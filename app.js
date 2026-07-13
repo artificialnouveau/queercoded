@@ -3102,9 +3102,11 @@ async function openZine() {
 // Old manual per-page rotations are dropped: the defaults below are correct.
 try { localStorage.removeItem("queercoded.zineRot.v1"); } catch {}
 // Pages known to be sideways in AlgoDance.pdf. Scanned/flattened pages have
-// no text layer for the auto-detector, so these are rotated a quarter-turn
-// right by default.
-const ZINE_DEFAULT_ROT = { 4: 90, 5: 90, 6: 90, 7: 90 };
+// no text layer for the auto-detector, so these get an ABSOLUTE viewport
+// rotation: exactly this many degrees, regardless of any rotation the PDF's
+// own page metadata carries (page 7 carries its own 90, which used to stack
+// with ours into an upside-down 180).
+const ZINE_ABS_ROT = { 4: 90, 5: 90, 6: 90, 7: 90 };
 const zineAutoRot = new Map();
 async function zineExtraRot(page, n) {
   let auto = zineAutoRot.get(n);
@@ -3125,7 +3127,7 @@ async function zineExtraRot(page, n) {
     } catch {}
     zineAutoRot.set(n, auto);
   }
-  return auto || ZINE_DEFAULT_ROT[n] || 0;
+  return auto;
 }
 
 // Pages render into OFFSCREEN canvases, cached as promises (so concurrent
@@ -3136,8 +3138,9 @@ const zineCache = new Map(); // "page@rot@height" -> Promise<canvas>
 async function paintZinePage(n, boxH) {
   if (!zine?.doc || n < 1 || n > zine.doc.numPages) return null;
   const page = await zine.doc.getPage(n);
-  const extra = await zineExtraRot(page, n);
-  const rot = (page.rotate + extra + 360) % 360;
+  const rot = ZINE_ABS_ROT[n] != null
+    ? ZINE_ABS_ROT[n]
+    : (page.rotate + await zineExtraRot(page, n) + 360) % 360;
   const key = `${n}@${rot}@${boxH}`;
   if (!zineCache.has(key)) {
     zineCache.set(key, (async () => {
@@ -3366,7 +3369,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v44 (2026-07-13)");
+  console.log("Queercoded build v45 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
