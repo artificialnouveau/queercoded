@@ -16,6 +16,9 @@
 }
 
 * { box-sizing: border-box; }
+/* The hidden attribute must ALWAYS win, even over display:flex rules; without
+   this, elements like the playback controls stay visible when disabled. */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   --t: 56px; /* tile pitch */

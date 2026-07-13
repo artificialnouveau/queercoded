@@ -2177,7 +2177,7 @@ function finishTeach(now, timedOut = false) {
   // Ghost replay starts AFTER the SAVED/riso flash has cleared, so it isn't
   // lost in the noise of the save moment; the ghost is worth watching alone.
   clearTimeout(ghostPreviewTimer);
-  ghostPreviewTimer = setTimeout(() => startEchoTest(tmpl), 1500);
+  ghostPreviewTimer = setTimeout(() => startPlaybackExample(tmpl.id), 1500);
   // Guided takes: words with 3 examples calibrate FAR better thresholds, so
   // actively steer toward three, with the button itself naming the next take.
   const n = templates.filter((x) => x.word.toLowerCase() === t.word.toLowerCase()).length;
@@ -2245,23 +2245,6 @@ function startPlaybackItems(items, label, key) {
 // count-in with the start pose held faintly, you perform from memory, and
 // your attempt is scored against the word with the same matcher Perform
 // uses. Cycles demo -> your turn -> result until stopped.
-// Instant echo test after saving: the fresh code is demonstrated once, then
-// you perform it back and it is scored. If your own code does not match you,
-// you learn it ten seconds after teaching it, not later in Perform.
-function startEchoTest(tmpl) {
-  const all = templates.filter((t) =>
-    t.word.toLowerCase() === tmpl.word.toLowerCase() && (t.family || "blaze") === currentFamily);
-  playback = {
-    items: [tmpl],
-    allItems: all.length ? all : [tmpl],
-    label: tmpl.word,
-    key: "rh:" + tmpl.word.toLowerCase(),
-    idx: 0, tRel: 0, lastNow: null, lastCount: 0, stepDone: 0,
-    mode: "rehearse", phase: "demo", once: true,
-  };
-  updatePbControls();
-  renderCodeList();
-}
 function startRehearse(word) {
   const all = templates.filter((t) => t.word.toLowerCase() === word.toLowerCase());
   if (!all.length) return;
@@ -2679,15 +2662,6 @@ function drawPlayback(now) {
     return;
   }
   if (ph === "result" && pb.tRel >= 2300) {
-    if (pb.once) {
-      // Echo test: one cycle, then verdict in the teach message.
-      setTeachMsg(pb.result.ok
-        ? `Echo test passed: ${pb.result.pct}% match. “${pb.label}” is learnable.`
-        : `Echo test: ${pb.result.pct}%. Your fresh code didn't match you back; consider recording “${pb.label}” again.`,
-        pb.result.ok ? "" : "warn");
-      stopPlayback();
-      return;
-    }
     if (pb.mode === "routine") {
       pb.stepIdx++;
       if (pb.stepIdx >= pb.steps.length) {
@@ -3406,7 +3380,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v40 (2026-07-13)");
+  console.log("Queercoded build v41 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
