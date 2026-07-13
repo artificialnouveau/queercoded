@@ -3097,19 +3097,15 @@ async function openZine() {
 }
 
 // Per-page rotation. Some pages hold sideways text; where the PDF has a text
-// layer, the dominant baseline direction detects and fixes that automatically,
-// and the Rotate button stores a manual quarter-turn per page (remembered
-// across visits) for scanned pages the detector cannot read.
-const ZINE_ROT_KEY = "queercoded.zineRot.v1";
-let zineRot = {};
-try { zineRot = JSON.parse(localStorage.getItem(ZINE_ROT_KEY)) || {}; } catch { zineRot = {}; }
+// layer, the dominant baseline direction detects and fixes that automatically.
+// Old manual per-page rotations are dropped: the defaults below are correct.
+try { localStorage.removeItem("queercoded.zineRot.v1"); } catch {}
 // Pages known to be sideways in AlgoDance.pdf. Scanned/flattened pages have
 // no text layer for the auto-detector, so these are rotated a quarter-turn
-// right by default (a manual Rotate still overrides and is remembered).
+// right by default.
 const ZINE_DEFAULT_ROT = { 4: 90, 5: 90, 6: 90, 7: 90 };
 const zineAutoRot = new Map();
 async function zineExtraRot(page, n) {
-  if (zineRot[n] != null) return zineRot[n];
   let auto = zineAutoRot.get(n);
   if (auto == null) {
     auto = 0;
@@ -3186,17 +3182,6 @@ function zineFlip(dir) {
   renderZinePage(zine.page + dir, dir);
 }
 
-// Quarter-turn the current page clockwise; remembered per page.
-document.getElementById("zineRotate").addEventListener("click", async () => {
-  if (!zine?.doc) return;
-  const n = zine.page;
-  const page = await zine.doc.getPage(n);
-  const cur = await zineExtraRot(page, n);
-  zineRot[n] = (cur + 90) % 360;
-  try { localStorage.setItem(ZINE_ROT_KEY, JSON.stringify(zineRot)); } catch {}
-  for (const k of [...zineCache.keys()]) if (k.startsWith(n + "@")) zineCache.delete(k);
-  renderZinePage(n, 0);
-});
 zinePrevBtn.addEventListener("click", () => zineFlip(-1));
 zineNextBtn.addEventListener("click", () => zineFlip(1));
 // Click the page itself: right half flips forward, left half back.
@@ -3380,7 +3365,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v42 (2026-07-13)");
+  console.log("Queercoded build v43 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
