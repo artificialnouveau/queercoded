@@ -155,6 +155,17 @@ function trimStillEnds(frames) {
   while (b > a + 4 && maxPoseDist(frames[b - 2], frames[b - 1]) < STILL) b--;
   return frames.slice(a, b);
 }
+// Stronger lead trim: frame-to-frame stillness misses slow idle jitter, so a
+// long "getting ready" pause can survive into a code and stall its playback.
+// Skip ahead until the pose has actually LEFT the opening pose, keeping a
+// couple of frames of wind-up.
+function trimLeadIn(frames) {
+  if (frames.length < 8) return frames;
+  const DEV = 0.12; // weighted max-landmark departure that counts as "moving"
+  let a = 0;
+  while (a < frames.length - 4 && maxPoseDist(frames[a], frames[0]) < DEV) a++;
+  return frames.slice(Math.max(0, a - 2));
+}
 
 // How far the pose ever strays from its first frame. Used to reject captures
 // where the face was covered and uncovered with no gesture in between.
@@ -459,13 +470,16 @@ function loadTemplates() {
   let list;
   try { list = JSON.parse(localStorage.getItem(STORE_KEY)) || []; }
   catch { list = []; }
-  // Older codes were saved with the stand-still moments left in at both ends,
-  // which made them score worse against motion-bounded Perform segments and
-  // skewed the energy gate. Normalize them once here.
+  // Older codes were saved with the stand-still moments left in at both ends
+  // (and a "getting ready" lead-in), which stalled playback openings, skewed
+  // the energy gate, and scored worse against motion-bounded segments.
+  // Normalize them once here, scaling the stored duration to match what was
+  // cut so playback tempo stays true.
   for (const t of list) {
     if (!Array.isArray(t?.seq) || t.seq.length !== FIXED_LEN) continue;
-    const trimmed = trimStillEnds(t.seq);
+    const trimmed = trimLeadIn(trimStillEnds(t.seq));
     if (trimmed.length >= 4 && trimmed.length < t.seq.length) {
+      if (t.durMs) t.durMs = Math.max(300, Math.round(t.durMs * trimmed.length / t.seq.length));
       t.seq = resampleSeq(trimmed, FIXED_LEN);
     }
   }
@@ -1114,7 +1128,7 @@ async function runFrame() {
             w.y < e.y);                  // and the wrist continues upward
         const handVis = wristUsable(lms[15], lms[13]) || wristUsable(lms[16], lms[14]);
         if (teach) {
-          teachStep(vec, hands, nearNow, now);
+          teachStep(vec, hands, nearNow, now, handVis);
         } else if (currentTab === "perform" && !playback) {
           // Matching pauses while any ghost/routine/rehearse is on screen,
           // so following along never fires words by accident.
@@ -2059,10 +2073,11 @@ const ARM_DELAY_MS = 450;
 // check. Recording is deliberate, previewed as a ghost right after saving,
 // and the One-Euro filter tames wild wrist guesses, so unlike Perform
 // matching, teaching does not require visible hands.
-function teachStep(vec, hands, near, now) {
+function teachStep(vec, hands, near, now, handVis) {
   const t = teach;
   if (t.manual) {
     t.frames.push(vec); t.near.push(near); t.onface.push(hands.left || hands.right);
+    (t.handv || (t.handv = [])).push(!!handVis);
     return;
   }
   if (t.state === "prime") {          // waiting for a fresh right-hand cover
@@ -2080,7 +2095,9 @@ function teachStep(vec, hands, near, now) {
     else if (now - t.lastOn > HOLD_GRACE_MS) { t.state = "prime"; return; }
     if (now - t.holdSince >= START_HOLD_MS) {
       t.state = "capturing";
-      t.frames = [vec]; t.near = [near]; t.onface = [hands.left || hands.right]; t.startedAt = now;
+      t.frames = [vec]; t.near = [near]; t.onface = [hands.left || hands.right];
+      t.handv = [!!handVis];
+      t.startedAt = now;
       t.canStopL = false; t.stopSince = 0; t.stopLastOn = 0;
     }
     return;
@@ -2094,6 +2111,7 @@ function teachStep(vec, hands, near, now) {
   t.frames.push(vec);
   t.near.push(near);
   t.onface.push(hands.left || hands.right);
+  t.handv.push(!!handVis);
   if (!hands.left) { t.canStopL = true; t.lOnSince = 0; }
   else if (t.canStopL && !t.lOnSince) t.lOnSince = now;
   // The stop countdown also waits out ARM_DELAY_MS of sustained cover, so a
@@ -2145,6 +2163,20 @@ function finishTeach(now, timedOut = false) {
   recordBtn.textContent = "Record movement";
   setPerformState();
 
+  // The dance is only the span where at least one hand was trackable: shave
+  // hand-less frames off BOTH ends first (mid-move dropouts are motion blur
+  // and stay), so a code never opens or closes on guessed wrists.
+  const totalFrames = t.frames.length;
+  if (t.handv && t.handv.length === totalFrames) {
+    let lo = 0, hi = totalFrames;
+    while (lo < hi - 3 && !t.handv[lo]) lo++;
+    while (hi > lo + 3 && !t.handv[hi - 1]) hi--;
+    if (hi - lo >= 3 && (lo > 0 || hi < totalFrames)) {
+      t.frames = t.frames.slice(lo, hi);
+      t.near = t.near.slice(lo, hi);
+      t.onface = t.onface.slice(lo, hi);
+    }
+  }
   // Trim the trigger holds off both ends so every code starts and ends where
   // the movement actually happened. The broad near-face radius catches the
   // approach and departure, but a dance may legitimately keep a hand near the
@@ -2155,6 +2187,7 @@ function finishTeach(now, timedOut = false) {
     core = trimNearFace(t.frames, t.onface || []);
   }
   core = trimStillEnds(core); // codes span the movement, not the holds around it
+  core = trimLeadIn(core);    // and never open on a "getting ready" pause
 
   // Same travel gate as segmentation, applied to manual and timed-out
   // recordings too: a capture that never really went anywhere is not a code.
@@ -2166,7 +2199,10 @@ function finishTeach(now, timedOut = false) {
     setTeachMsg("Too little movement was seen between start and stop. Tracking works best when your hands stay inside the frame; step back a little, or make the movement bigger.", "warn");
     return;
   }
-  const durMs = Math.max(300, Math.round(now - t.startedAt));
+  // Duration must describe the TRIMMED movement, not the whole recording:
+  // otherwise playback stretches the move over dead time and opens with a
+  // long freeze.
+  const durMs = Math.max(300, Math.round((now - t.startedAt) * (core.length / Math.max(1, totalFrames))));
   const seq = resampleSeq(core, FIXED_LEN);
   const tmpl = { id: newId(), word: t.word, seq, durMs, family: currentFamily, algo: algoChoice, createdAt: Date.now(), sq: 1, bpm: teachBpm() };
   templates.push(tmpl);
@@ -3367,7 +3403,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v47 (2026-07-13)");
+  console.log("Queercoded build v48 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
