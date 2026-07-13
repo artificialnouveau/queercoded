@@ -3101,12 +3101,10 @@ async function openZine() {
 // layer, the dominant baseline direction detects and fixes that automatically.
 // Old manual per-page rotations are dropped: the defaults below are correct.
 try { localStorage.removeItem("queercoded.zineRot.v1"); } catch {}
-// Pages known to be sideways in AlgoDance.pdf. Scanned/flattened pages have
-// no text layer for the auto-detector, so these get an ABSOLUTE viewport
-// rotation: exactly this many degrees, regardless of any rotation the PDF's
-// own page metadata carries (page 7 carries its own 90, which used to stack
-// with ours into an upside-down 180).
-const ZINE_ABS_ROT = { 4: 90, 5: 90, 6: 90, 7: 90 };
+// Pages known to be sideways in AlgoDance.pdf, verified against raw renders:
+// 4-6 hold sideways content and need a quarter-turn right; 7 is ALREADY
+// upright and needs none. Absolute viewport rotation, ignoring metadata.
+const ZINE_ABS_ROT = { 4: 90, 5: 90, 6: 90, 7: 0 };
 const zineAutoRot = new Map();
 async function zineExtraRot(page, n) {
   let auto = zineAutoRot.get(n);
@@ -3369,7 +3367,7 @@ document.getElementById("introDismiss").addEventListener("click", () => {
 
 (async function boot() {
   // Build tag, so "which version am I actually running?" has an answer.
-  console.log("Queercoded build v45 (2026-07-13)");
+  console.log("Queercoded build v46 (2026-07-13)");
   // Pre-warm the speech engine: the voice list loads lazily, and asking for it
   // up front shaves the extra-long delay off the FIRST spoken match.
   if ("speechSynthesis" in window) speechSynthesis.getVoices();
