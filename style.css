@@ -644,7 +644,7 @@ input:focus-visible,
 .code-item .pose-strip { margin: 2px 0 10px; }
 .teach-preview-label { font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
 .btn.playing { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
-.codes-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.codes-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 10px; }
 .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
 
 .about-list { margin: 8px 0 4px; padding-left: 20px; }

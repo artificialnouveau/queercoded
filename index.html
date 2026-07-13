@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Queercoded: Code a movement</title>
-  <link rel="stylesheet" href="style.css?v=46" />
+  <link rel="stylesheet" href="style.css?v=47" />
 </head>
 <body>
   <!-- Riso duotone filter (deep-red shadows to yellow highlights, lightly
@@ -205,14 +205,15 @@
       <!-- CODES -->
       <div class="tabpane" data-pane="codes" id="pane-codes" role="tabpanel" aria-labelledby="tab-codes" hidden>
         <h2>Saved codes</h2>
-        <p class="muted">Everything is stored locally in your browser. Click a word (or Play all) to dance along with the ghost skeleton. When a word has several examples, each one can be played or deleted on its own.</p>
-        <ul id="codeList" class="code-list"></ul>
         <div class="codes-actions">
           <button id="exportBtn" class="btn ghost small">Export</button>
           <button id="importBtn" class="btn ghost small">Import</button>
           <button id="clearAll" class="btn ghost small danger">Delete all</button>
           <input id="importFile" type="file" accept="application/json" hidden />
         </div>
+        <p class="muted"><b>Export</b> saves all your moves as a small file (skeleton coordinates only, never video), so you can back them up or share them with someone. <b>Import</b> loads a file like that, yours or a friend's, and adds those moves to your own. <b>Delete all</b> wipes every saved code from this browser.</p>
+        <p class="muted">Everything is stored locally in your browser. Click a word (or Play all) to dance along with the ghost skeleton. When a word has several examples, each one can be played or deleted on its own.</p>
+        <ul id="codeList" class="code-list"></ul>
       </div>
 
       <!-- ABOUT -->
@@ -250,6 +251,6 @@
     </aside>
   </main>
 
-  <script type="module" src="app.js?v=46"></script>
+  <script type="module" src="app.js?v=47"></script>
 </body>
 </html>
